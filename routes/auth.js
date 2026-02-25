@@ -104,7 +104,8 @@ router.post('/forgotpassword', async (req, res) => {
         await user.save();
 
         // Create reset url
-        const resetUrl = `http://localhost:5173/resetpassword/${resetToken}`;
+        const baseUrl = process.env.FRONTEND_URL || 'https://gnandeepvenigalla.github.io/Paywise/#';
+        const resetUrl = `${baseUrl}/resetpassword/${resetToken}`;
 
         const message = `You are receiving this email because you (or someone else) has requested the reset of a password. Please make a PUT request to: \n\n ${resetUrl}`;
 
@@ -172,7 +173,8 @@ router.post('/invite', auth, async (req, res) => {
 
         const sender = await User.findById(req.user.id);
 
-        const message = `Hi there!\n\n${sender.username} has invited you to join Paywise.\n\nPaywise is the smartest way to split itemized bills and track group expenses along with your friends.\n\nSign up today to join them: http://localhost:5173/register\n\nWelcome to Paywise!`;
+        const baseUrl = process.env.FRONTEND_URL || 'https://gnandeepvenigalla.github.io/Paywise/#';
+        const message = `Hi there!\n\n${sender.username} has invited you to join Paywise.\n\nPaywise is the smartest way to split itemized bills and track group expenses along with your friends.\n\nSign up today to join them: ${baseUrl}/register\n\nWelcome to Paywise!`;
 
         await sendEmail({
             email,
