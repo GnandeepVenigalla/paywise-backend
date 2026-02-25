@@ -91,10 +91,11 @@ router.post('/:id/members', auth, async (req, res) => {
 
         // If user is not yet registered, send an email invite!
         if (!user) {
+            const baseUrl = process.env.FRONTEND_URL || 'https://gnandeepvenigalla.github.io/Paywise/#';
             await sendEmail({
                 email,
                 subject: `You're invited to join ${group.name} on Paywise!`,
-                message: `Hi there!\n\nYou've been invited to join the group "${group.name}" on Paywise to easily track and split expenses.\n\nSign up here to join: http://localhost:5173/register\n\nWelcome to Paywise!`
+                message: `Hi there!\n\nYou've been invited to join the group "${group.name}" on Paywise to easily track and split expenses.\n\nSign up here to join: ${baseUrl}/register\n\nWelcome to Paywise!`
             });
             return res.json({ msg: 'Invitation email sent!' });
         }
