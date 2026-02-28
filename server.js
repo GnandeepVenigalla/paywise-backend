@@ -20,6 +20,9 @@ app.use('/api/auth', authRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/expenses', expenseRoutes);
 
+// Schedulers
+const startSettleUpScheduler = require('./utils/settleUpScheduler');
+
 const PORT = process.env.PORT || 5001;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/paywise';
 
@@ -27,7 +30,10 @@ mongoose.connect(MONGO_URI).then(() => {
     console.log('Connected to MongoDB');
     app.listen(PORT, () => {
         console.log(`Server running on port ${PORT}`);
+        // Start the daily settle-up email scheduler
+        startSettleUpScheduler();
     });
 }).catch(err => {
     console.error('MongoDB connection error:', err);
 });
+

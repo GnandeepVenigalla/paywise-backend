@@ -20,7 +20,41 @@ const UserSchema = new mongoose.Schema({
     friends: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
-    }]
+    }],
+    friendNotes: [{
+        friend: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        note: { type: String, default: '' }
+    }],
+    notificationSettings: {
+        addedToGroup: { type: Boolean, default: true },
+        addedAsFriend: { type: Boolean, default: true },
+        expenseAdded: { type: Boolean, default: false },
+        expenseEdited: { type: Boolean, default: false },
+        expenseCommented: { type: Boolean, default: false },
+        expenseDue: { type: Boolean, default: true },
+        expensePaid: { type: Boolean, default: true },
+        monthlySummary: { type: Boolean, default: true },
+        majorUpdates: { type: Boolean, default: true },
+    },
+    defaultCurrency: { type: String, default: 'USD' },
+    timezone: { type: String, default: 'America/New_York' },
+    appSettings: {
+        // Financial Customization
+        defaultSplitMethod: { type: String, default: 'equally' }, // 'equally' | 'percentage' | 'full'
+        monthlyBudget: { type: Number, default: 0 },
+        // Display & Accessibility
+        theme: { type: String, default: 'system' }, // 'light' | 'dark' | 'system'
+        highContrastMode: { type: Boolean, default: false },
+        dateFormat: { type: String, default: 'MM/DD/YYYY' }, // 'DD/MM/YYYY' | 'MM/DD/YYYY'
+        timeFormat: { type: String, default: '12h' }, // '12h' | '24h'
+        language: { type: String, default: 'English' },
+        // Privacy & Social
+        profileVisibility: { type: Boolean, default: true },
+        autoAcceptFriends: { type: Boolean, default: false },
+        hideBalance: { type: Boolean, default: false },
+        // Security
+        biometricLock: { type: Boolean, default: false },
+    },
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', UserSchema);

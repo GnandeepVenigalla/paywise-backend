@@ -273,4 +273,111 @@ router.post('/friends', auth, async (req, res) => {
     }
 });
 
+// @route   PUT api/auth/notifications
+// @desc    Update notification settings
+router.put('/notifications', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+
+        user.notificationSettings = {
+            ...user.notificationSettings,
+            ...req.body
+        };
+
+        await user.save();
+        res.json(user.notificationSettings);
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   PUT api/auth/preferences
+// @desc    Update user preferences (currency, timezone)
+router.put('/preferences', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+
+        if (req.body.defaultCurrency) user.defaultCurrency = req.body.defaultCurrency;
+        if (req.body.timezone) user.timezone = req.body.timezone;
+
+        await user.save();
+        res.json({ defaultCurrency: user.defaultCurrency, timezone: user.timezone });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   PUT api/auth/app-settings
+// @desc    Save all app settings (split method, budget, theme, etc.)
+router.put('/app-settings', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+
+        user.appSettings = {
+            ...user.appSettings,
+            ...req.body,
+        };
+
+        await user.save();
+        res.json(user.appSettings);
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   GET api/auth/friend-note/:friendId
+// @desc    Get the shared note between two friends (stored on both sides)
+router.get('/friend-note/:friendId', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+        const entry = user.friendNotes.find(n => n.friend.toString() === req.params.friendId);
+        res.json({ note: entry ? entry.note : '' });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   PUT api/auth/friend-note/:friendId
+// @desc    Save/update the shared note for a friend (stored on both users)
+router.put('/friend-note/:friendId', auth, async (req, res) => {
+    try {
+        const noteText = req.body.note || '';
+
+        // Update on the current user's side
+        const user = await User.findById(req.user.id);
+        let entry = user.friendNotes.find(n => n.friend.toString() === req.params.friendId);
+        if (entry) {
+            entry.note = noteText;
+        } else {
+            user.friendNotes.push({ friend: req.params.friendId, note: noteText });
+        }
+        await user.save();
+
+        // Mirror on the friend's side so they see it too
+        const friend = await User.findById(req.params.friendId);
+        if (friend) {
+            let friendEntry = friend.friendNotes.find(n => n.friend.toString() === req.user.id);
+            if (friendEntry) {
+                friendEntry.note = noteText;
+            } else {
+                friend.friendNotes.push({ friend: req.user.id, note: noteText });
+            }
+            await friend.save();
+        }
+
+        res.json({ note: noteText });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
 module.exports = router;
