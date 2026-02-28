@@ -111,14 +111,15 @@ router.post('/scan', auth, async (req, res) => {
 
         const prompt = `
             Analyze this receipt image. 
-            Extract ONLY the individual line items purchased and their prices. 
-            Do NOT include the total, tax, subtotal, change, or card informations.
-            Filter out SKUs, store IDs, and leading characters. Keep the product names as clean human-readable text.
+            Extract the individual line items purchased, their prices, and the Tax amount if present.
+            Do NOT include the total, subtotal, change, or card informations.
+            Filter out SKUs, store IDs, and leading characters. Keep the product names as clean human-readable text. For tax, name it "Tax".
             Format your response STRICTLY as a JSON array of objects with "name" and "price" (number). 
             Example output format EXACTLY:
             [ 
               {"name": "Bananas", "price": 1.99},
-              {"name": "Mediterrean Salad", "price": 8.99} 
+              {"name": "Mediterrean Salad", "price": 8.99},
+              {"name": "Tax", "price": 0.50}
             ]
         `;
 
