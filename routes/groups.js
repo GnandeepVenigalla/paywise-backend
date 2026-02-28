@@ -186,4 +186,64 @@ router.post('/:id/leave', auth, async (req, res) => {
     }
 });
 
+// @route   POST api/groups/:id/join
+// @desc    Join a group via link
+router.post('/:id/join', auth, async (req, res) => {
+    try {
+        const group = await Group.findById(req.params.id);
+        if (!group) return res.status(404).json({ msg: 'Group not found' });
+
+        if (!group.members.includes(req.user.id)) {
+            // Remove from pastMembers if re-joining
+            group.pastMembers = group.pastMembers.filter(id => id.toString() !== req.user.id.toString());
+            group.members.push(req.user.id);
+            await group.save();
+        }
+        res.json({ msg: 'Joined group successfully!', group });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   PUT api/groups/:id/note
+// @desc    Update a group's shared note (visible to all members)
+router.put('/:id/note', auth, async (req, res) => {
+    try {
+        const group = await Group.findById(req.params.id);
+        if (!group) return res.status(404).json({ msg: 'Group not found' });
+
+        const isMember = group.members.map(m => m.toString()).includes(req.user.id) ||
+            group.pastMembers.map(m => m.toString()).includes(req.user.id);
+        if (!isMember) return res.status(403).json({ msg: 'Not authorized' });
+
+        group.note = req.body.note || '';
+        await group.save();
+        res.json({ note: group.note });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   PUT api/groups/:id/settle-date
+// @desc    Set or clear the group's settle-up date
+router.put('/:id/settle-date', auth, async (req, res) => {
+    try {
+        const group = await Group.findById(req.params.id);
+        if (!group) return res.status(404).json({ msg: 'Group not found' });
+
+        const isMember = group.members.map(m => m.toString()).includes(req.user.id) ||
+            group.pastMembers.map(m => m.toString()).includes(req.user.id);
+        if (!isMember) return res.status(403).json({ msg: 'Not authorized' });
+
+        group.settleUpDate = req.body.settleUpDate ? new Date(req.body.settleUpDate) : null;
+        await group.save();
+        res.json({ settleUpDate: group.settleUpDate });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
 module.exports = router;

@@ -17,6 +17,14 @@ const GroupSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
         required: true
+    },
+    note: {
+        type: String,
+        default: ''
+    },
+    settleUpDate: {
+        type: Date,
+        default: null
     }
 }, { timestamps: true });
 
