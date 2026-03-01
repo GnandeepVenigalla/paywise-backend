@@ -6,40 +6,35 @@ const User = require('../models/User');
 const Group = require('../models/Group');
 const Expense = require('../models/Expense');
 
-// Splitwise API Config (These should be in .env)
 const CLIENT_ID = process.env.SPLITWISE_CLIENT_ID;
 const CLIENT_SECRET = process.env.SPLITWISE_CLIENT_SECRET;
-const REDIRECT_URI = process.env.SPLITWISE_REDIRECT_URI || 'http://localhost:5173/splitwise-callback';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OAUTH FLOW  (for regular users — requires production deployment)
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * @route   GET api/splitwise/auth-url
- * @desc    Get Splitwise OAuth URL
+ * @desc    Get Splitwise OAuth authorization URL
  */
 router.get('/auth-url', auth, (req, res) => {
-    // Determine redirect URI: use .env if present, otherwise decide based on origin
-    let redirectUri = process.env.SPLITWISE_REDIRECT_URI || 'http://localhost:5173/Paywise/#/splitwise-callback';
-
+    let redirectUri = process.env.SPLITWISE_REDIRECT_URI || 'http://localhost:5173/Paywise/splitwise-callback.html';
     const origin = req.get('origin') || '';
-    if (origin.includes('localhost')) {
-        redirectUri = 'http://localhost:5173/Paywise/#/splitwise-callback';
+    if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+        redirectUri = 'http://localhost:5173/Paywise/splitwise-callback.html';
     }
-
     const url = `https://secure.splitwise.com/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}`;
-    res.json({ url });
+    res.json({ url, redirectUri });
 });
 
 /**
  * @route   POST api/splitwise/migrate
- * @desc    Exchange code for token and migrate data
+ * @desc    Exchange OAuth code for access token then run migration
  */
 router.post('/migrate', auth, async (req, res) => {
     const { code, redirectUri } = req.body;
-
-    // Choose the correct redirect URI for token exchange
-    const actualRedirectUri = redirectUri || process.env.SPLITWISE_REDIRECT_URI || 'http://localhost:5173/Paywise/#/splitwise-callback';
-
+    const actualRedirectUri = redirectUri || process.env.SPLITWISE_REDIRECT_URI;
     try {
-        // 1. Exchange code for access token
         const tokenResponse = await axios.post('https://secure.splitwise.com/oauth/token', {
             grant_type: 'authorization_code',
             client_id: CLIENT_ID,
@@ -47,72 +42,150 @@ router.post('/migrate', auth, async (req, res) => {
             code,
             redirect_uri: actualRedirectUri
         });
-
         const accessToken = tokenResponse.data.access_token;
+        return runMigration(req.user.id, accessToken, res);
+    } catch (err) {
+        console.error('[Splitwise OAuth] Token exchange failed:', err.response?.data || err.message);
+        return res.status(400).json({ msg: 'OAuth failed — the code may have expired. Please try again.' });
+    }
+});
 
-        // Update user status to pending
-        await User.findByIdAndUpdate(req.user.id, {
+// ─────────────────────────────────────────────────────────────────────────────
+// TOKEN FLOW  (for advanced users / local testing)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * @route   POST api/splitwise/migrate-with-token
+ * @desc    Migrate using a personal Splitwise API/OAuth token directly
+ */
+router.post('/migrate-with-token', auth, async (req, res) => {
+    const { apiToken } = req.body;
+    if (!apiToken || !apiToken.trim()) {
+        return res.status(400).json({ msg: 'Splitwise API token is required.' });
+    }
+    return runMigration(req.user.id, apiToken.trim(), res);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED MIGRATION LOGIC
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function runMigration(userId, accessToken, res) {
+    try {
+        console.log(`[Splitwise Migrator] Starting for user ${userId}`);
+
+        // 1. Verify token by fetching current user
+        let swCurrentUser;
+        try {
+            const meResponse = await axios.get('https://secure.splitwise.com/api/v3.0/get_current_user', {
+                headers: { Authorization: `Bearer ${accessToken}` }
+            });
+            swCurrentUser = meResponse.data.user;
+            console.log(`[Splitwise Migrator] Verified as: ${swCurrentUser.first_name} ${swCurrentUser.last_name}`);
+        } catch (authErr) {
+            console.error('[Splitwise Migrator] Token invalid:', authErr.response?.data || authErr.message);
+            return res.status(401).json({ msg: 'Invalid Splitwise token. Please check and try again.' });
+        }
+
+        // 2. Mark migration as in-progress
+        await User.findByIdAndUpdate(userId, {
             splitwiseToken: accessToken,
             splitwiseMigrationStatus: 'pending'
         });
 
-        // 2. Fetch Splitwise Groups
+        // 3. Fetch all groups
         const groupsResponse = await axios.get('https://secure.splitwise.com/api/v3.0/get_groups', {
             headers: { Authorization: `Bearer ${accessToken}` }
         });
 
-        const swGroups = groupsResponse.data.groups;
+        const swGroups = groupsResponse.data.groups || [];
+        console.log(`[Splitwise Migrator] Found ${swGroups.length} groups.`);
 
-        // 3. Migrate Groups & Expenses (Simplified logic)
+        let processedGroups = 0;
+        let totalExpenses = 0;
+
+        // 4. For each group, import expenses
         for (const swGroup of swGroups) {
-            // Check if group already exists (by name for demo, ideally by splitwise_id)
-            let group = await Group.findOne({ name: swGroup.name, members: req.user.id });
+            const targetName = swGroup.name === 'Non-group' ? 'Splitwise: Individuals' : swGroup.name;
+            console.log(`[Splitwise Migrator] Importing group: ${targetName}`);
 
+            let group = await Group.findOne({ name: targetName, members: userId });
             if (!group) {
                 group = new Group({
-                    name: swGroup.name,
-                    members: [req.user.id], // In real app, we'd search/invite Splitwise members too
-                    createdBy: req.user.id
+                    name: targetName,
+                    members: [userId],
+                    createdBy: userId,
+                    note: 'Imported from Splitwise'
                 });
                 await group.save();
             }
 
-            // 4. Fetch Expenses for this group
-            const expensesResponse = await axios.get(`https://secure.splitwise.com/api/v3.0/get_expenses?group_id=${swGroup.id}`, {
-                headers: { Authorization: `Bearer ${accessToken}` }
-            });
+            // Fetch up to 500 expenses for this group
+            let expensesResponse;
+            try {
+                const expUrl = swGroup.id === 0
+                    ? 'https://secure.splitwise.com/api/v3.0/get_expenses?limit=500'
+                    : `https://secure.splitwise.com/api/v3.0/get_expenses?group_id=${swGroup.id}&limit=500`;
 
-            const swExpenses = expensesResponse.data.expenses;
+                expensesResponse = await axios.get(expUrl, {
+                    headers: { Authorization: `Bearer ${accessToken}` }
+                });
+            } catch (expErr) {
+                console.warn(`[Splitwise Migrator] Skipped group ${swGroup.name}:`, expErr.message);
+                continue;
+            }
+
+            const swExpenses = expensesResponse.data.expenses || [];
+            let groupExpenseCount = 0;
 
             for (const swExp of swExpenses) {
-                // Create Expense in Paywise
-                const newExp = new Expense({
-                    description: swExp.description,
-                    amount: parseFloat(swExp.cost),
-                    date: new Date(swExp.date),
-                    paidBy: req.user.id, // Simplified: Assuming current user paid for migration demo
-                    group: group._id,
-                    addedBy: req.user.id,
-                    splits: [{
-                        user: req.user.id,
-                        amount: parseFloat(swExp.cost) // Simplified split
-                    }]
-                });
-                await newExp.save();
+                if (swExp.deleted_at) continue;
 
-                group.expenses.push(newExp._id);
+                const cost = parseFloat(swExp.cost);
+                if (isNaN(cost) || cost === 0) continue;
+
+                // Skip duplicates
+                const exists = await Expense.findOne({
+                    description: swExp.description || 'Splitwise Migrated',
+                    amount: Math.abs(cost),
+                    group: group._id,
+                    addedBy: userId
+                });
+                if (exists) continue;
+
+                await new Expense({
+                    description: swExp.description || 'Splitwise Migrated',
+                    amount: Math.abs(cost),
+                    date: swExp.date ? new Date(swExp.date) : new Date(),
+                    paidBy: userId,
+                    group: group._id,
+                    addedBy: userId,
+                    splits: [{ user: userId, amount: Math.abs(cost) }]
+                }).save();
+
+                groupExpenseCount++;
+                totalExpenses++;
             }
-            await group.save();
+
+            console.log(`[Splitwise Migrator] ✓ ${groupExpenseCount} expenses → "${targetName}"`);
+            processedGroups++;
         }
 
-        // Update user status to completed
-        await User.findByIdAndUpdate(req.user.id, { splitwiseMigrationStatus: 'completed' });
+        // 5. Mark done
+        await User.findByIdAndUpdate(userId, { splitwiseMigrationStatus: 'completed' });
+        console.log(`[Splitwise Migrator] Complete: ${processedGroups} groups, ${totalExpenses} expenses.`);
 
-        res.json({ msg: 'Migration successful', groupsCount: swGroups.length });
+        return res.json({
+            msg: 'Migration successful',
+            groupsCount: processedGroups,
+            expensesCount: totalExpenses,
+            user: swCurrentUser ? `${swCurrentUser.first_name} ${swCurrentUser.last_name}` : 'Unknown'
+        });
+
     } catch (err) {
-        console.error('Splitwise migration error:', err.response?.data || err.message);
-        res.status(500).json({ msg: 'Migration failed. Check your Splitwise connectivity.' });
+        console.error('[Splitwise Migrator] FATAL:', err.response?.data || err.message);
+        return res.status(500).json({ msg: 'Migration failed: ' + (err.response?.data?.error || err.message) });
     }
-});
+}
 
 module.exports = router;

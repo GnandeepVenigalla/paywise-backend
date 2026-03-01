@@ -36,7 +36,33 @@ router.get('/', auth, async (req, res) => {
         const groups = await Group.find({
             $or: [{ members: req.user.id }, { pastMembers: req.user.id }]
         }).populate('members pastMembers', 'username email');
-        res.json(groups);
+
+        // Calculate balances dynamically for each group
+        const groupsWithBalances = await Promise.all(groups.map(async (group) => {
+            const expenses = await Expense.find({ group: group._id });
+
+            let balances = {};
+            group.members.forEach(m => { balances[m._id.toString()] = 0; });
+            group.pastMembers.forEach(m => { balances[m._id.toString()] = 0; });
+
+            expenses.forEach(exp => {
+                if (balances[exp.paidBy.toString()] !== undefined) {
+                    balances[exp.paidBy.toString()] += exp.amount;
+                }
+                exp.splits.forEach(split => {
+                    if (balances[split.user.toString()] !== undefined) {
+                        balances[split.user.toString()] -= split.amount;
+                    }
+                });
+            });
+
+            // Convert to a plain object and add balances
+            const groupObj = group.toObject();
+            groupObj.balances = balances;
+            return groupObj;
+        }));
+
+        res.json(groupsWithBalances);
     } catch (err) {
         console.error(err.message);
         res.status(500).send('Server Error');
