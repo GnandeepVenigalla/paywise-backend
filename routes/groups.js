@@ -97,13 +97,15 @@ router.get('/:id', auth, async (req, res) => {
         allAssociatedMembers.forEach(m => { balances[m._id.toString()] = 0; });
 
         expenses.forEach(exp => {
-            if (balances[exp.paidBy._id.toString()] !== undefined) {
-                balances[exp.paidBy._id.toString()] += exp.amount;
+            const payerId = exp.paidBy._id.toString();
+            if (balances[payerId] !== undefined) {
+                balances[payerId] += exp.amount;
             }
 
             exp.splits.forEach(split => {
-                if (balances[split.user.toString()] !== undefined) {
-                    balances[split.user.toString()] -= split.amount;
+                const debtorId = split.user._id ? split.user._id.toString() : split.user.toString();
+                if (balances[debtorId] !== undefined) {
+                    balances[debtorId] -= split.amount;
                 }
             });
         });
