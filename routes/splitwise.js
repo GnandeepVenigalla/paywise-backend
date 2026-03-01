@@ -214,6 +214,7 @@ async function runMigration(userId, accessToken, res) {
             await new Expense({
                 description: swExp.description || 'Splitwise Migrated',
                 amount: Math.abs(cost),
+                currency: swExp.currency_code || 'USD',
                 date: swExp.date ? new Date(swExp.date) : new Date(),
                 paidBy: paywisePaidBy,
                 group: targetGroupId,

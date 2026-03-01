@@ -37,6 +37,10 @@ router.get('/', auth, async (req, res) => {
             $or: [{ members: req.user.id }, { pastMembers: req.user.id }]
         }).populate('members pastMembers', 'username email');
 
+        // Fetch the user to get their block list
+        const currentUser = await User.findById(req.user.id);
+        const blockedUserIds = (currentUser.blockedUsers || []).map(id => id.toString());
+
         // Calculate balances dynamically for each group
         const groupsWithBalances = await Promise.all(groups.map(async (group) => {
             const expenses = await Expense.find({ group: group._id });
@@ -45,13 +49,17 @@ router.get('/', auth, async (req, res) => {
             group.members.forEach(m => { balances[m._id.toString()] = 0; });
             group.pastMembers.forEach(m => { balances[m._id.toString()] = 0; });
 
+            const { convertAmount } = require('../utils/currency');
             expenses.forEach(exp => {
-                if (balances[exp.paidBy.toString()] !== undefined) {
-                    balances[exp.paidBy.toString()] += exp.amount;
+                const payerId = exp.paidBy.toString();
+                const sourceCurr = exp.currency || 'USD';
+                if (balances[payerId] !== undefined) {
+                    balances[payerId] += convertAmount(exp.amount, sourceCurr, 'USD');
                 }
                 exp.splits.forEach(split => {
-                    if (balances[split.user.toString()] !== undefined) {
-                        balances[split.user.toString()] -= split.amount;
+                    const userId = split.user.toString();
+                    if (balances[userId] !== undefined) {
+                        balances[userId] -= convertAmount(split.amount, sourceCurr, 'USD');
                     }
                 });
             });
@@ -62,7 +70,13 @@ router.get('/', auth, async (req, res) => {
             return groupObj;
         }));
 
-        res.json(groupsWithBalances);
+        // Hide groups that contain any blocked users
+        const filteredGroups = groupsWithBalances.filter(group => {
+            const groupMemberIds = group.members.map(m => (m._id || m).toString());
+            return !groupMemberIds.some(id => blockedUserIds.includes(id));
+        });
+
+        res.json(filteredGroups);
     } catch (err) {
         console.error(err.message);
         res.status(500).send('Server Error');
@@ -96,16 +110,18 @@ router.get('/:id', auth, async (req, res) => {
         const allAssociatedMembers = [...group.members, ...group.pastMembers];
         allAssociatedMembers.forEach(m => { balances[m._id.toString()] = 0; });
 
+        const { convertAmount } = require('../utils/currency');
         expenses.forEach(exp => {
             const payerId = exp.paidBy._id.toString();
+            const sourceCurr = exp.currency || 'USD';
             if (balances[payerId] !== undefined) {
-                balances[payerId] += exp.amount;
+                balances[payerId] += convertAmount(exp.amount, sourceCurr, 'USD');
             }
 
             exp.splits.forEach(split => {
                 const debtorId = split.user._id ? split.user._id.toString() : split.user.toString();
                 if (balances[debtorId] !== undefined) {
-                    balances[debtorId] -= split.amount;
+                    balances[debtorId] -= convertAmount(split.amount, sourceCurr, 'USD');
                 }
             });
         });
@@ -127,6 +143,13 @@ router.post('/:id/members', auth, async (req, res) => {
         if (!group) return res.status(404).json({ msg: 'Group not found' });
 
         const user = await User.findOne({ email });
+
+        // Fetch the current user to check block list
+        const currentUser = await User.findById(req.user.id);
+
+        if (user && (user.blockedUsers.includes(req.user.id) || (currentUser.blockedUsers && currentUser.blockedUsers.includes(user._id)))) {
+            return res.status(403).json({ msg: 'Cannot add a blocked user to a group.' });
+        }
 
         // If user is not yet registered, send an email invite!
         if (!user) {
@@ -190,13 +213,15 @@ router.post('/:id/leave', auth, async (req, res) => {
         const expenses = await Expense.find({ group: req.params.id });
         let userBalance = 0;
 
+        const { convertAmount } = require('../utils/currency');
         expenses.forEach(exp => {
+            const sourceCurr = exp.currency || 'USD';
             if (exp.paidBy.toString() === req.user.id) {
-                userBalance += exp.amount;
+                userBalance += convertAmount(exp.amount, sourceCurr, 'USD');
             }
             exp.splits.forEach(split => {
                 if (split.user.toString() === req.user.id) {
-                    userBalance -= split.amount;
+                    userBalance -= convertAmount(split.amount, sourceCurr, 'USD');
                 }
             });
         });

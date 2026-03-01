@@ -224,17 +224,19 @@ router.get('/friends', auth, async (req, res) => {
 
             let balance = 0; // Negative means user owes friend, Positive means friend owes user
 
+            const { convertAmount } = require('../utils/currency');
             expenses.forEach(exp => {
                 const isPaidByMe = exp.paidBy.toString() === user._id.toString();
+                const sourceCurr = exp.currency || 'USD';
                 if (isPaidByMe) {
                     const friendSplit = exp.splits.find(s => s.user.toString() === friend._id.toString());
                     if (friendSplit) {
-                        balance += friendSplit.amount; // Friend owes me
+                        balance += convertAmount(friendSplit.amount, sourceCurr, 'USD'); // Friend owes me
                     }
                 } else {
                     const mySplit = exp.splits.find(s => s.user.toString() === user._id.toString());
                     if (mySplit) {
-                        balance -= mySplit.amount; // I owe friend
+                        balance -= convertAmount(mySplit.amount, sourceCurr, 'USD'); // I owe friend
                     }
                 }
             });
@@ -269,6 +271,16 @@ router.post('/friends', auth, async (req, res) => {
 
         if (!friend) {
             return res.status(404).json({ msg: 'User not found' });
+        }
+
+        // Check if user has blocked this person
+        if (user.blockedUsers.includes(friendId)) {
+            return res.status(400).json({ msg: 'You have blocked this user. Please unblock them first to add as a friend.' });
+        }
+
+        // Check if the other person has blocked us
+        if (friend.blockedUsers.includes(req.user.id)) {
+            return res.status(400).json({ msg: 'Unable to add friend at this time.' });
         }
 
         if (user.friends.includes(friendId)) {
@@ -443,6 +455,36 @@ router.post('/friends/block/:friendId', auth, async (req, res) => {
         await user.save();
 
         res.json({ msg: 'User blocked successfully' });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   GET api/auth/friends/blocked
+// @desc    Get the list of users blocked by the current user
+router.get('/friends/blocked', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).populate('blockedUsers', 'username email');
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+        res.json(user.blockedUsers);
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   POST api/auth/friends/unblock/:userId
+// @desc    Unblock a previously blocked user
+router.post('/friends/unblock/:userId', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+
+        user.blockedUsers = user.blockedUsers.filter(u => u.toString() !== req.params.userId);
+        await user.save();
+
+        res.json({ msg: 'User unblocked successfully' });
     } catch (err) {
         console.error(err.message);
         res.status(500).send('Server Error');

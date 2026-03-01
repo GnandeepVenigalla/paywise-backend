@@ -9,6 +9,19 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 router.post('/', auth, async (req, res) => {
     try {
         const { description, amount, group, paidBy, splits, items } = req.body;
+        const User = require('../models/User');
+
+        // Check if any participant has blocked the other
+        const currentUser = await User.findById(req.user.id);
+        const participantIds = [...new Set([(paidBy || req.user.id).toString(), ...(splits || []).map(s => (s.user._id || s.user).toString())])];
+
+        for (const pId of participantIds) {
+            if (pId === req.user.id) continue;
+            const otherUser = await User.findById(pId);
+            if (otherUser && (otherUser.blockedUsers.includes(req.user.id) || currentUser.blockedUsers.includes(pId))) {
+                return res.status(403).json({ msg: 'Cannot add expense involving a blocked user.' });
+            }
+        }
 
         const newExpense = new Expense({
             description,
@@ -76,15 +89,21 @@ router.get('/friends/:friendId', auth, async (req, res) => {
             .populate('addedBy', 'username email')
             .populate('splits.user', 'username email');
 
+        const { convertAmount } = require('../utils/currency');
         let balance = 0;
         expenses.forEach(exp => {
             const isPaidByMe = exp.paidBy._id.toString() === req.user.id;
+            const sourceCurr = exp.currency || 'USD';
             if (isPaidByMe) {
                 const fSplit = exp.splits.find(s => s.user._id.toString() === friend._id.toString());
-                if (fSplit) balance += fSplit.amount;
+                if (fSplit) {
+                    balance += convertAmount(fSplit.amount, sourceCurr, 'USD');
+                }
             } else {
                 const mySplit = exp.splits.find(s => s.user._id.toString() === req.user.id);
-                if (mySplit) balance -= mySplit.amount;
+                if (mySplit) {
+                    balance -= convertAmount(mySplit.amount, sourceCurr, 'USD');
+                }
             }
         });
 
