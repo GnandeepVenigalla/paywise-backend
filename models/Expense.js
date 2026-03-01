@@ -9,7 +9,13 @@ const ExpenseSchema = new mongoose.Schema({
     splits: [{
         user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
         amount: { type: Number, required: true } // Expected amount to pay back 
-    }]
+    }],
+    items: [{
+        name: { type: String, required: true },
+        price: { type: Number, required: true },
+        assignedTo: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
+    }],
+    addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Expense', ExpenseSchema);

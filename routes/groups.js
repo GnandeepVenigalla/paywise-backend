@@ -58,7 +58,12 @@ router.get('/:id', auth, async (req, res) => {
             return res.status(401).json({ msg: 'Not authorized' });
         }
 
-        const expenses = await Expense.find({ group: req.params.id }).populate('paidBy', 'username email').sort({ date: -1 });
+        const expenses = await Expense.find({ group: req.params.id })
+            .populate('paidBy', 'username email')
+            .populate('addedBy', 'username email')
+            .populate('splits.user', 'username email')
+            .populate('items.assignedTo', 'username email')
+            .sort({ date: -1 });
 
         // Calculate balances dynamically for ALL members (active and past)
         let balances = {}; // { userId: balance }
