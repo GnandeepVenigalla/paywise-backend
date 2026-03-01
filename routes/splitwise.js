@@ -254,8 +254,9 @@ async function runMigration(userId, accessToken, res) {
         console.log(`[Splitwise Migrator] DONE. Processed ${insertedCount} new expenses.`);
 
         return res.json({
-            msg: 'Migration complete',
+            msg: 'Migration successful',
             expensesCount: insertedCount,
+            groupsCount: Object.keys(groupMapping).length,
             user: `${swCurrentUser.first_name} ${swCurrentUser.last_name}`
         });
 
