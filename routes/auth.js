@@ -394,4 +394,28 @@ router.put('/friend-note/:friendId', auth, async (req, res) => {
     }
 });
 
+// @route   DELETE api/auth/friends/:friendId
+// @desc    Remove a friend (mutual — removes from both sides)
+router.delete('/friends/:friendId', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        const friend = await User.findById(req.params.friendId);
+
+        if (!friend) return res.status(404).json({ msg: 'User not found' });
+
+        // Remove from both sides
+        user.friends = user.friends.filter(f => f.toString() !== req.params.friendId);
+        if (friend) {
+            friend.friends = friend.friends.filter(f => f.toString() !== req.user.id);
+            await friend.save();
+        }
+        await user.save();
+
+        res.json({ msg: 'Friend removed successfully' });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
 module.exports = router;
