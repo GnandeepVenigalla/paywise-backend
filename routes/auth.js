@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const User = require('../models/User');
+const Report = require('../models/Report');
 const auth = require('../middleware/auth');
 const sendEmail = require('../utils/sendEmail');
 
@@ -412,6 +413,59 @@ router.delete('/friends/:friendId', auth, async (req, res) => {
         await user.save();
 
         res.json({ msg: 'Friend removed successfully' });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   POST api/auth/friends/block/:friendId
+// @desc    Block a friend (removes as friend from both sides and adds to block list)
+router.post('/friends/block/:friendId', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        const friend = await User.findById(req.params.friendId);
+
+        if (!friend) return res.status(404).json({ msg: 'User not found' });
+
+        // Remove from both sides
+        user.friends = user.friends.filter(f => f.toString() !== req.params.friendId);
+        if (friend) {
+            friend.friends = friend.friends.filter(f => f.toString() !== req.user.id);
+            await friend.save();
+        }
+
+        // Add to block list if not already there
+        if (!user.blockedUsers.includes(req.params.friendId)) {
+            user.blockedUsers.push(req.params.friendId);
+        }
+
+        await user.save();
+
+        res.json({ msg: 'User blocked successfully' });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   POST api/auth/friends/report/:friendId
+// @desc    Report a user for abuse or spam
+router.post('/friends/report/:friendId', auth, async (req, res) => {
+    const { reason, details } = req.body;
+    try {
+        const friend = await User.findById(req.params.friendId);
+        if (!friend) return res.status(404).json({ msg: 'User not found' });
+
+        const newReport = new Report({
+            reporter: req.user.id,
+            reportedUser: req.params.friendId,
+            reason: reason || 'Other',
+            details: details || ''
+        });
+
+        await newReport.save();
+        res.json({ msg: 'Report submitted successfully' });
     } catch (err) {
         console.error(err.message);
         res.status(500).send('Server Error');

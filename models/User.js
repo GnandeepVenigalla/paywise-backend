@@ -21,6 +21,10 @@ const UserSchema = new mongoose.Schema({
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
     }],
+    blockedUsers: [{
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+    }],
     friendNotes: [{
         friend: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         note: { type: String, default: '' }
