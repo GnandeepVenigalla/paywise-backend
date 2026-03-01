@@ -18,11 +18,9 @@ const CLIENT_SECRET = process.env.SPLITWISE_CLIENT_SECRET;
  * @desc    Get Splitwise OAuth authorization URL
  */
 router.get('/auth-url', auth, (req, res) => {
-    let redirectUri = process.env.SPLITWISE_REDIRECT_URI || 'http://localhost:5173/Paywise/splitwise-callback.html';
-    const origin = req.get('origin') || '';
-    if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
-        redirectUri = 'http://localhost:5173/Paywise/splitwise-callback.html';
-    }
+    // Always use the registered production callback URL.
+    // Local dev testing should use the API token flow instead.
+    const redirectUri = process.env.SPLITWISE_REDIRECT_URI || 'https://gnandeepvenigalla.github.io/Paywise/splitwise-callback.html';
     const url = `https://secure.splitwise.com/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}`;
     res.json({ url, redirectUri });
 });
