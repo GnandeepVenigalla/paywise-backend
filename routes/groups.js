@@ -277,4 +277,29 @@ router.put('/:id/settle-date', auth, async (req, res) => {
     }
 });
 
+// @route   DELETE api/groups/:id
+// @desc    Delete a group and all its expenses (creator only)
+router.delete('/:id', auth, async (req, res) => {
+    try {
+        const group = await Group.findById(req.params.id);
+        if (!group) return res.status(404).json({ msg: 'Group not found' });
+
+        // Only the creator can delete the group
+        if (group.createdBy.toString() !== req.user.id) {
+            return res.status(403).json({ msg: 'Only the group creator can delete this group' });
+        }
+
+        // Delete all expenses belonging to this group
+        await Expense.deleteMany({ group: group._id });
+
+        // Delete the group
+        await Group.findByIdAndDelete(group._id);
+
+        res.json({ msg: 'Group and all its expenses deleted successfully' });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
 module.exports = router;

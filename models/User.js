@@ -62,6 +62,11 @@ const UserSchema = new mongoose.Schema({
         enum: ['none', 'pending', 'completed'],
         default: 'none'
     },
+    // Ghost users are created during Splitwise migration for people not yet on Paywise.
+    // They hold real expense/group data. When the person registers with the same email,
+    // their account is promoted to a full account automatically.
+    isGhostUser: { type: Boolean, default: false },
+    avatarInitials: { type: String }, // stored so ghost user displays correctly
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', UserSchema);
