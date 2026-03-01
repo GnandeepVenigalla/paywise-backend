@@ -54,6 +54,13 @@ const UserSchema = new mongoose.Schema({
         hideBalance: { type: Boolean, default: false },
         // Security
         biometricLock: { type: Boolean, default: false },
+        biometricCredentialId: { type: String },
+    },
+    splitwiseToken: { type: String },
+    splitwiseMigrationStatus: {
+        type: String,
+        enum: ['none', 'pending', 'completed'],
+        default: 'none'
     },
 }, { timestamps: true });
 
