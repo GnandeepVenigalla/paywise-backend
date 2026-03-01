@@ -15,10 +15,12 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 const authRoutes = require('./routes/auth');
 const groupRoutes = require('./routes/groups');
 const expenseRoutes = require('./routes/expenses');
+const splitwiseRoutes = require('./routes/splitwise');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/expenses', expenseRoutes);
+app.use('/api/splitwise', splitwiseRoutes);
 
 // Schedulers
 const startSettleUpScheduler = require('./utils/settleUpScheduler');

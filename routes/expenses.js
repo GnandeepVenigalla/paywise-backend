@@ -8,17 +8,24 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 // @desc    Add an expense
 router.post('/', auth, async (req, res) => {
     try {
-        const { description, amount, group, paidBy, splits } = req.body;
+        const { description, amount, group, paidBy, splits, items } = req.body;
 
         const newExpense = new Expense({
             description,
             amount,
             group: group || null,
             paidBy: paidBy || req.user.id,
-            splits
+            addedBy: req.user.id,
+            splits,
+            items: items || []
         });
 
-        const expense = await newExpense.save();
+        let expense = await newExpense.save();
+        expense = await expense.populate([
+            { path: 'paidBy', select: 'username email' },
+            { path: 'splits.user', select: 'username email' },
+            { path: 'items.assignedTo', select: 'username email' }
+        ]);
         res.json(expense);
     } catch (err) {
         console.error(err.message);
@@ -66,6 +73,7 @@ router.get('/friends/:friendId', auth, async (req, res) => {
             .sort({ date: -1 })
             .populate('group', 'name')
             .populate('paidBy', 'username email')
+            .populate('addedBy', 'username email')
             .populate('splits.user', 'username email');
 
         let balance = 0;
@@ -157,8 +165,13 @@ router.delete('/:id', auth, async (req, res) => {
             return res.status(404).json({ msg: 'Expense not found' });
         }
 
-        // Only allow the person who created it OR a member of the group to delete it
-        // For simplicity, we just delete it since they are in the group.
+        // Only allow the person who created/uploaded it to delete it
+        const isUploader = expense.addedBy ? expense.addedBy.toString() === req.user.id : expense.paidBy.toString() === req.user.id;
+
+        if (!isUploader) {
+            return res.status(401).json({ msg: 'Only the person who uploaded this expense can delete it' });
+        }
+
         await expense.deleteOne();
 
         res.json({ msg: 'Expense removed' });
@@ -181,25 +194,49 @@ router.put('/:id', auth, async (req, res) => {
             return res.status(404).json({ msg: 'Expense not found' });
         }
 
-        const { description, amount } = req.body;
+        // Only allow the person who created/uploaded it to edit it
+        const isUploader = expense.addedBy ? expense.addedBy.toString() === req.user.id : expense.paidBy.toString() === req.user.id;
+
+        if (!isUploader) {
+            return res.status(401).json({ msg: 'Only the person who uploaded this expense can edit it' });
+        }
+
+        const { description, amount, splits, items } = req.body;
 
         if (description) expense.description = description;
 
         if (amount && Number(amount) !== expense.amount) {
             const newAmount = Number(amount);
-            // Proportionalize the splits
-            if (expense.amount > 0) {
+            // Proportionalize the splits and items only if they are not explicitly provided in this request
+            if (!splits && expense.amount > 0) {
                 const ratio = newAmount / expense.amount;
                 expense.splits = expense.splits.map(split => ({
                     user: split.user,
                     amount: split.amount * ratio
                 }));
+                // Also proportionalize items if any
+                if (expense.items && expense.items.length > 0) {
+                    expense.items = expense.items.map(item => ({
+                        ...item.toObject(),
+                        price: item.price * ratio
+                    }));
+                }
             }
             expense.amount = newAmount;
         }
 
+        if (splits) expense.splits = splits;
+        if (items) expense.items = items;
+
         await expense.save();
-        res.json(expense);
+
+        const populatedExpense = await Expense.findById(expense._id)
+            .populate('paidBy', 'username email')
+            .populate('addedBy', 'username email')
+            .populate('splits.user', 'username email')
+            .populate('items.assignedTo', 'username email');
+
+        res.json(populatedExpense);
     } catch (err) {
         console.error(err.message);
         if (err.kind === 'ObjectId') {
@@ -221,6 +258,7 @@ router.get('/activity', auth, async (req, res) => {
         })
             .sort({ date: -1 })
             .populate('paidBy', 'username')
+            .populate('addedBy', 'username')
             .populate('splits.user', 'username')
             .populate('group', 'name')
             .limit(30);
