@@ -151,14 +151,24 @@ router.post('/:id/members', auth, async (req, res) => {
             return res.status(403).json({ msg: 'Cannot add a blocked user to a group.' });
         }
 
-        // If user is not yet registered, send an email invite!
-        if (!user) {
+        // If user is not yet registered or is a ghost account, send an email invite!
+        if (!user || user.isGhostUser) {
             const baseUrl = process.env.FRONTEND_URL || 'https://gnandeepvenigalla.github.io/Paywise/#';
             await sendEmail({
                 email,
                 subject: `You're invited to join ${group.name} on Paywise!`,
                 message: `Hi there!\n\nYou've been invited to join the group "${group.name}" on Paywise to easily track and split expenses.\n\nSign up here to join: ${baseUrl}/register\n\nWelcome to Paywise!`
             });
+
+            // If user exists as a ghost, still add them to the group so balances start tracking
+            if (user) {
+                if (!group.members.includes(user._id)) {
+                    group.members.push(user._id);
+                    await group.save();
+                }
+                return res.json({ msg: 'Invitation email sent to ghost user!' });
+            }
+
             return res.json({ msg: 'Invitation email sent!' });
         }
 

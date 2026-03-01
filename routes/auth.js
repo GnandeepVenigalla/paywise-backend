@@ -182,7 +182,7 @@ router.post('/invite', auth, async (req, res) => {
         const { email } = req.body;
 
         const existingUser = await User.findOne({ email });
-        if (existingUser) {
+        if (existingUser && !existingUser.isGhostUser) {
             return res.status(400).json({ msg: 'This user already has a Paywise account!' });
         }
 
