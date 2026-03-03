@@ -24,6 +24,7 @@ app.use('/api/splitwise', splitwiseRoutes);
 
 // Schedulers
 const startSettleUpScheduler = require('./utils/settleUpScheduler');
+const { updateRates } = require('./utils/currency');
 
 const PORT = process.env.PORT || 5001;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/paywise';
@@ -34,6 +35,9 @@ mongoose.connect(MONGO_URI).then(() => {
         console.log(`Server running on port ${PORT}`);
         // Start the daily settle-up email scheduler
         startSettleUpScheduler();
+        // Fetch live exchange rates and schedule 12-hour refresh cycle
+        updateRates();
+        setInterval(updateRates, 1000 * 60 * 60 * 12);
     });
 }).catch(err => {
     console.error('MongoDB connection error:', err);

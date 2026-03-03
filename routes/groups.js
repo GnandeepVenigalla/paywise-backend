@@ -137,12 +137,13 @@ router.get('/:id', auth, async (req, res) => {
 // @desc    Add member to group via email
 router.post('/:id/members', auth, async (req, res) => {
     try {
-        const { email } = req.body;
+        const { email, phone } = req.body;
         const group = await Group.findById(req.params.id);
 
         if (!group) return res.status(404).json({ msg: 'Group not found' });
 
-        const user = await User.findOne({ email });
+        const query = email ? { email } : { phone };
+        const user = await User.findOne(query);
 
         // Fetch the current user to check block list
         const currentUser = await User.findById(req.user.id);
@@ -153,23 +154,28 @@ router.post('/:id/members', auth, async (req, res) => {
 
         // If user is not yet registered or is a ghost account, send an email invite!
         if (!user || user.isGhostUser) {
-            const baseUrl = process.env.FRONTEND_URL || 'https://www.paywiseapp.com/#';
-            await sendEmail({
-                email,
-                subject: `You're invited to join ${group.name} on Paywise!`,
-                message: `Hi there!\n\nYou've been invited to join the group "${group.name}" on Paywise to easily track and split expenses.\n\nSign up here to join: ${baseUrl}/register\n\nWelcome to Paywise!`
-            });
+            if (email) {
+                const baseUrl = process.env.FRONTEND_URL || 'https://www.paywiseapp.com/#';
+                await sendEmail({
+                    email,
+                    subject: `You're invited to join ${group.name} on Paywise!`,
+                    message: `Hi there!\n\nYou've been invited to join the group "${group.name}" on Paywise to easily track and split expenses.\n\nSign up here to join: ${baseUrl}/register\n\nWelcome to Paywise!`
+                });
 
-            // If user exists as a ghost, still add them to the group so balances start tracking
-            if (user) {
-                if (!group.members.includes(user._id)) {
-                    group.members.push(user._id);
-                    await group.save();
+                // If user exists as a ghost, still add them to the group so balances start tracking
+                if (user) {
+                    if (!group.members.includes(user._id)) {
+                        group.members.push(user._id);
+                        await group.save();
+                    }
+                    return res.json({ msg: 'Invitation email sent to ghost user!' });
                 }
-                return res.json({ msg: 'Invitation email sent to ghost user!' });
-            }
 
-            return res.json({ msg: 'Invitation email sent!' });
+                return res.json({ msg: 'Invitation email sent!' });
+            } else {
+                // If they searched by phone and no user found, we can't send an email
+                return res.status(404).json({ msg: 'No user found with this phone number. Ask them to register first or invite them by email.' });
+            }
         }
 
         if (!group.members.includes(user._id)) {

@@ -11,12 +11,28 @@ const UserSchema = new mongoose.Schema({
         required: true,
         unique: true
     },
+    phone: {
+        type: String,
+        required: false, // Enforced in registration route for new users
+        unique: true,
+        sparse: true, // Allows multiple null/missing values
+        validate: {
+            validator: function (v) {
+                if (!v) return true; // Allow null/empty if not required
+                return /\d{10,}/.test(v.replace(/[^\d]/g, ''));
+            },
+            message: props => `${props.value} is not a valid phone number!`
+        }
+    },
     password: {
         type: String,
         required: true
     },
     resetPasswordToken: String,
     resetPasswordExpire: Date,
+    isVerified: { type: Boolean, default: false },
+    emailVerificationOtp: String,
+    emailVerificationExpire: Date,
     friends: [{
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'

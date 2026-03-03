@@ -11,37 +11,53 @@ const sendEmail = require('../utils/sendEmail');
 // @route   POST api/auth/register
 // @desc    Register user (promotes ghost accounts from Splitwise migration)
 router.post('/register', async (req, res) => {
-    const { username, email, password } = req.body;
+    const { username, email, phone, password, defaultCurrency } = req.body;
+    if (!username || !email || !phone || !password) {
+        return res.status(400).json({ msg: 'Please enter all fields including phone number' });
+    }
     try {
-        let user = await User.findOne({ email });
+        let user = await User.findOne({ $or: [{ email }, { phone }] });
+
         if (user) {
-            if (user.isGhostUser) {
-                // Promote ghost account — keep all their existing expense/group/friend data
+            if (user.isGhostUser || !user.isVerified) {
+                // If it's a ghost account or an unverified registration, allow "re-registering" / proceeding to OTP
                 const salt = await bcrypt.genSalt(10);
                 user.password = await bcrypt.hash(password, salt);
                 user.username = username;
-                user.isGhostUser = false;
-                user.splitwiseMigrationStatus = 'none'; // so they can also migrate their own data
+                user.phone = phone;
+                user.isVerified = false;
+                if (user.isGhostUser) {
+                    user.isGhostUser = false;
+                    user.splitwiseMigrationStatus = 'none';
+                    if (defaultCurrency) user.defaultCurrency = defaultCurrency;
+                }
+
+                const otp = Math.floor(100000 + Math.random() * 900000).toString();
+                user.emailVerificationOtp = crypto.createHash('sha256').update(otp).digest('hex');
+                user.emailVerificationExpire = Date.now() + 10 * 60 * 1000;
                 await user.save();
-                const payload = { user: { id: user.id } };
-                return jwt.sign(payload, process.env.JWT_SECRET || 'secret', { expiresIn: 360000 }, (err, token) => {
-                    if (err) throw err;
-                    res.json({ token, user: { id: user.id, username: user.username, email: user.email } });
-                });
+
+                const message = `Welcome to Paywise!\n\nYour verification code is: ${otp}\n\nThis code is valid for 10 minutes.`;
+                await sendEmail({ email: user.email, subject: 'Paywise Verification Code', message });
+
+                return res.json({ msg: 'Verification code sent to email', requireOtp: true, email: user.email });
             }
-            return res.status(400).json({ msg: 'User already exists' });
+            return res.status(400).json({ msg: 'User already exists and is verified' });
         }
 
-        user = new User({ username, email, password });
+        user = new User({ username, email, phone, password, isVerified: false, defaultCurrency: defaultCurrency || 'USD' });
         const salt = await bcrypt.genSalt(10);
         user.password = await bcrypt.hash(password, salt);
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        user.emailVerificationOtp = crypto.createHash('sha256').update(otp).digest('hex');
+        user.emailVerificationExpire = Date.now() + 10 * 60 * 1000;
         await user.save();
 
-        const payload = { user: { id: user.id } };
-        jwt.sign(payload, process.env.JWT_SECRET || 'secret', { expiresIn: 360000 }, (err, token) => {
-            if (err) throw err;
-            res.json({ token, user: { id: user.id, username: user.username, email: user.email } });
-        });
+        const message = `Welcome to Paywise!\n\nYour verification code is: ${otp}\n\nThis code is valid for 10 minutes.`;
+        await sendEmail({ email: user.email, subject: 'Paywise Verification Code', message });
+
+        res.json({ msg: 'Verification code sent to email', requireOtp: true, email: user.email });
     } catch (err) {
         console.error(err.message);
         res.status(500).send('Server error');
@@ -63,6 +79,18 @@ router.post('/login', async (req, res) => {
             return res.status(400).json({ msg: 'Invalid Credentials' });
         }
 
+        if (!user.isVerified) {
+            // Generate and send a new OTP since they tried to log in but are unverified
+            const otp = Math.floor(100000 + Math.random() * 900000).toString();
+            user.emailVerificationOtp = crypto.createHash('sha256').update(otp).digest('hex');
+            user.emailVerificationExpire = Date.now() + 10 * 60 * 1000;
+            await user.save();
+            const message = `Welcome to Paywise!\n\nYour verification code is: ${otp}\n\nThis code is valid for 10 minutes.`;
+            await sendEmail({ email: user.email, subject: 'Paywise Verification Code', message });
+
+            return res.status(403).json({ msg: 'Please verify your email address. A new code was sent.', requireOtp: true, email: user.email });
+        }
+
         const payload = { user: { id: user.id } };
         jwt.sign(payload, process.env.JWT_SECRET || 'secret', { expiresIn: 360000 }, (err, token) => {
             if (err) throw err;
@@ -71,6 +99,59 @@ router.post('/login', async (req, res) => {
     } catch (err) {
         console.error(err.message);
         res.status(500).send('Server error');
+    }
+});
+
+// @route   POST api/auth/verify-otp
+// @desc    Verify OTP and return token
+router.post('/verify-otp', async (req, res) => {
+    const { email, otp } = req.body;
+    try {
+        const user = await User.findOne({ email });
+        if (!user) return res.status(400).json({ msg: 'Invalid user' });
+
+        const hashedOtp = crypto.createHash('sha256').update(otp).digest('hex');
+        if (user.emailVerificationOtp !== hashedOtp || user.emailVerificationExpire < Date.now()) {
+            return res.status(400).json({ msg: 'Invalid or expired verification code' });
+        }
+
+        user.isVerified = true;
+        user.emailVerificationOtp = undefined;
+        user.emailVerificationExpire = undefined;
+        await user.save();
+
+        const payload = { user: { id: user.id } };
+        jwt.sign(payload, process.env.JWT_SECRET || 'secret', { expiresIn: 360000 }, (err, token) => {
+            if (err) throw err;
+            res.json({ token, user: { id: user.id, username: user.username, email: user.email } });
+        });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   POST api/auth/resend-otp
+// @desc    Resend verification OTP
+router.post('/resend-otp', async (req, res) => {
+    const { email } = req.body;
+    try {
+        const user = await User.findOne({ email });
+        if (!user) return res.status(400).json({ msg: 'Invalid user' });
+        if (user.isVerified) return res.status(400).json({ msg: 'User is already verified' });
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        user.emailVerificationOtp = crypto.createHash('sha256').update(otp).digest('hex');
+        user.emailVerificationExpire = Date.now() + 10 * 60 * 1000;
+        await user.save();
+
+        const message = `Welcome to Paywise!\n\nYour new verification code is: ${otp}\n\nThis code is valid for 10 minutes.`;
+        await sendEmail({ email: user.email, subject: 'Paywise Verification Code', message });
+
+        res.json({ msg: 'Verification code resent successfully' });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
     }
 });
 
@@ -88,10 +169,19 @@ router.get('/me', auth, async (req, res) => {
 });
 
 // @route   GET api/auth/users
-// @desc    Search users by email
+// @desc    Search users by exact email or phone
 router.get('/users', auth, async (req, res) => {
     try {
-        const users = await User.find({ email: new RegExp(req.query.q, 'i') }).select('-password');
+        const query = req.query.q;
+        if (!query) {
+            return res.json([]);
+        }
+        const users = await User.find({
+            $or: [
+                { email: query },
+                { phone: query }
+            ]
+        }).select('-password');
         res.json(users);
     } catch (err) {
         console.error(err.message);
