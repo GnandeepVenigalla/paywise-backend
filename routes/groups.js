@@ -153,7 +153,7 @@ router.post('/:id/members', auth, async (req, res) => {
 
         // If user is not yet registered or is a ghost account, send an email invite!
         if (!user || user.isGhostUser) {
-            const baseUrl = process.env.FRONTEND_URL || 'https://gnandeepvenigalla.github.io/Paywise/#';
+            const baseUrl = process.env.FRONTEND_URL || 'https://www.paywiseapp.com/#';
             await sendEmail({
                 email,
                 subject: `You're invited to join ${group.name} on Paywise!`,

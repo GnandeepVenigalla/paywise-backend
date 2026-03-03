@@ -20,7 +20,7 @@ const CLIENT_SECRET = process.env.SPLITWISE_CLIENT_SECRET;
 router.get('/auth-url', auth, (req, res) => {
     // Always use the registered production callback URL.
     // Local dev testing should use the API token flow instead.
-    const redirectUri = process.env.SPLITWISE_REDIRECT_URI || 'https://gnandeepvenigalla.github.io/Paywise/splitwise-callback.html';
+    const redirectUri = process.env.SPLITWISE_REDIRECT_URI || 'https://www.paywiseapp.com/splitwise-callback.html';
     const url = `https://secure.splitwise.com/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}`;
     res.json({ url, redirectUri });
 });
