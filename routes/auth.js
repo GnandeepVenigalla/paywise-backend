@@ -604,4 +604,53 @@ router.post('/friends/report/:friendId', auth, async (req, res) => {
     }
 });
 
+// @route   DELETE api/auth/account
+// @desc    Delete user account and clean up associations (more comprehensive)
+router.delete('/account', auth, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ msg: 'User not found' });
+        }
+
+        // 1. Remove user from all groups (active and past)
+        const Group = require('../models/Group');
+        await Group.updateMany(
+            { members: userId },
+            { $pull: { members: userId } }
+        );
+        await Group.updateMany(
+            { pastMembers: userId },
+            { $pull: { pastMembers: userId } }
+        );
+
+        // 2. Remove user from other users' friends and blocked lists
+        await User.updateMany(
+            { friends: userId },
+            { $pull: { friends: userId } }
+        );
+        await User.updateMany(
+            { blockedUsers: userId },
+            { $pull: { blockedUsers: userId } }
+        );
+
+        // 3. Delete reports filed by this user
+        const Report = require('../models/Report');
+        await Report.deleteMany({ reporter: userId });
+
+        // Note: We intentionally DO NOT delete shared expenses.
+        // This is to preserve the transaction history and balances for the friends 
+        // who were part of those expenses. The 'paidBy' reference will now point to a deleted user.
+
+        // 4. Finally, delete the user record itself
+        await User.findByIdAndDelete(userId);
+
+        res.json({ msg: 'Account and personal data deleted successfully. Shared transaction history preserved for participants.' });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
 module.exports = router;

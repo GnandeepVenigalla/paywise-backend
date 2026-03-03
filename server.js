@@ -41,5 +41,6 @@ mongoose.connect(MONGO_URI).then(() => {
     });
 }).catch(err => {
     console.error('MongoDB connection error:', err);
+    process.exit(1);
 });
 
