@@ -195,7 +195,7 @@ router.post('/:id/members', auth, async (req, res) => {
 // @desc    Edit group name
 router.put('/:id', auth, async (req, res) => {
     try {
-        const { name } = req.body;
+        const { name, currency } = req.body;
         const group = await Group.findById(req.params.id);
 
         if (!group) return res.status(404).json({ msg: 'Group not found' });
@@ -205,7 +205,8 @@ router.put('/:id', auth, async (req, res) => {
             return res.status(401).json({ msg: 'Not authorized' });
         }
 
-        group.name = name;
+        if (name) group.name = name;
+        if (currency !== undefined) group.currency = currency;
         await group.save();
         res.json(group);
     } catch (err) {

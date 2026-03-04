@@ -25,6 +25,10 @@ const GroupSchema = new mongoose.Schema({
     settleUpDate: {
         type: Date,
         default: null
+    },
+    currency: {
+        type: String,
+        default: null
     }
 }, { timestamps: true });
 
