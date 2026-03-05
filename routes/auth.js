@@ -189,6 +189,28 @@ router.get('/users', auth, async (req, res) => {
     }
 });
 
+// @route   POST api/auth/users/bulk
+// @desc    Search multiple users by exact emails or phones
+router.post('/users/bulk', auth, async (req, res) => {
+    try {
+        const { contacts } = req.body;
+        if (!contacts || !Array.isArray(contacts)) {
+            return res.json([]);
+        }
+
+        const users = await User.find({
+            $or: [
+                { email: { $in: contacts } },
+                { phone: { $in: contacts } }
+            ]
+        }).select('-password');
+        res.json(users);
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server error');
+    }
+});
+
 // @route   POST api/auth/forgotpassword
 // @desc    Send password reset email
 router.post('/forgotpassword', async (req, res) => {
