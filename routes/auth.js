@@ -519,6 +519,52 @@ router.put('/friend-note/:friendId', auth, async (req, res) => {
     }
 });
 
+// @route   GET api/auth/friend-settings/:friendId
+// @desc    Get interest settings for a friend
+router.get('/friend-settings/:friendId', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+        const setting = user.friendSettings.find(s => s.friend.toString() === req.params.friendId);
+        res.json({
+            interestRate: setting ? setting.interestRate : 0,
+            interestEnabled: setting ? setting.interestEnabled : false
+        });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   PUT api/auth/friend-settings/:friendId
+// @desc    Update interest settings for a friend
+router.put('/friend-settings/:friendId', auth, async (req, res) => {
+    try {
+        const { interestRate, interestEnabled } = req.body;
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+
+        let setting = user.friendSettings.find(s => s.friend.toString() === req.params.friendId);
+        if (setting) {
+            setting.interestRate = interestRate !== undefined ? interestRate : setting.interestRate;
+            setting.interestEnabled = interestEnabled !== undefined ? interestEnabled : setting.interestEnabled;
+            if (interestEnabled) setting.lastInterestApplied = new Date(); // Reset to today to start from tomorrow
+        } else {
+            user.friendSettings.push({
+                friend: req.params.friendId,
+                interestRate: interestRate || 0,
+                interestEnabled: interestEnabled || false,
+                lastInterestApplied: new Date()
+            });
+        }
+        await user.save();
+        res.json({ msg: 'Friend settings updated' });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
 // @route   DELETE api/auth/friends/:friendId
 // @desc    Remove a friend (mutual — removes from both sides)
 router.delete('/friends/:friendId', auth, async (req, res) => {

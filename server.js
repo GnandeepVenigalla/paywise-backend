@@ -35,6 +35,9 @@ mongoose.connect(MONGO_URI).then(() => {
         console.log(`Server running on port ${PORT}`);
         // Start the daily settle-up email scheduler
         startSettleUpScheduler();
+        // Start the daily friend loan interest scheduler
+        const startInterestScheduler = require('./utils/interestScheduler');
+        startInterestScheduler();
         // Fetch live exchange rates and schedule 12-hour refresh cycle
         updateRates();
         setInterval(updateRates, 1000 * 60 * 60 * 12);

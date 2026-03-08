@@ -16,7 +16,11 @@ const ExpenseSchema = new mongoose.Schema({
         price: { type: Number, required: true },
         assignedTo: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
     }],
-    addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+    addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    isLoan: { type: Boolean, default: false },
+    loanInterestRate: { type: Number, default: 0 },
+    lastInterestApplied: { type: Date },
+    parentLoan: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense' }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Expense', ExpenseSchema);

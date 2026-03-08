@@ -45,6 +45,12 @@ const UserSchema = new mongoose.Schema({
         friend: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         note: { type: String, default: '' }
     }],
+    friendSettings: [{
+        friend: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        interestRate: { type: Number, default: 0 },
+        interestEnabled: { type: Boolean, default: false },
+        lastInterestApplied: { type: Date, default: Date.now }
+    }],
     notificationSettings: {
         addedToGroup: { type: Boolean, default: true },
         addedAsFriend: { type: Boolean, default: true },
