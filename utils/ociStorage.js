@@ -11,13 +11,18 @@ const path = require('path');
 
 // Build the OCI auth provider from env vars (no wallet file needed)
 function getProvider() {
-    const privateKeyContent = process.env.OCI_PRIVATE_KEY_CONTENTS
-        ? process.env.OCI_PRIVATE_KEY_CONTENTS.replace(/\\n/g, '\n')
-        : null;
-
-    if (!privateKeyContent) {
+    const rawKey = process.env.OCI_PRIVATE_KEY_CONTENTS;
+    if (!rawKey) {
         throw new Error('OCI_PRIVATE_KEY_CONTENTS is not set in .env');
     }
+
+    // Handle both real newlines and escaped \n, and trim any whitespace/quotes
+    const privateKeyContent = rawKey
+        .trim()
+        .replace(/^["']|["']$/g, '') // Remove wrapping quotes if they exist
+        .replace(/\\n/g, '\n')       // Convert literal \n to real newlines
+        .replace(/\\r/g, '');        // Remove literal \r if present
+
 
     return new common.SimpleAuthenticationDetailsProvider(
         process.env.OCI_TENANCY_OCID,
