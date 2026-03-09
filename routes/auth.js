@@ -11,7 +11,8 @@ const sendEmail = require('../utils/sendEmail');
 // @route   POST api/auth/register
 // @desc    Register user (promotes ghost accounts from Splitwise migration)
 router.post('/register', async (req, res) => {
-    const { username, email, phone, password, defaultCurrency } = req.body;
+    let { username, email, phone, password, defaultCurrency } = req.body;
+    if (email) email = email.toLowerCase();
     if (!username || !email || !phone || !password) {
         return res.status(400).json({ msg: 'Please enter all fields including phone number' });
     }
@@ -67,7 +68,8 @@ router.post('/register', async (req, res) => {
 // @route   POST api/auth/login
 // @desc    Authenticate user & get token
 router.post('/login', async (req, res) => {
-    const { email, password } = req.body;
+    let { email, password } = req.body;
+    if (email) email = email.toLowerCase();
     try {
         let user = await User.findOne({ email });
         if (!user) {
@@ -105,7 +107,8 @@ router.post('/login', async (req, res) => {
 // @route   POST api/auth/verify-otp
 // @desc    Verify OTP and return token
 router.post('/verify-otp', async (req, res) => {
-    const { email, otp } = req.body;
+    let { email, otp } = req.body;
+    if (email) email = email.toLowerCase();
     try {
         const user = await User.findOne({ email });
         if (!user) return res.status(400).json({ msg: 'Invalid user' });
@@ -134,7 +137,8 @@ router.post('/verify-otp', async (req, res) => {
 // @route   POST api/auth/resend-otp
 // @desc    Resend verification OTP
 router.post('/resend-otp', async (req, res) => {
-    const { email } = req.body;
+    let { email } = req.body;
+    if (email) email = email.toLowerCase();
     try {
         const user = await User.findOne({ email });
         if (!user) return res.status(400).json({ msg: 'Invalid user' });
@@ -426,6 +430,66 @@ router.put('/notifications', auth, async (req, res) => {
 
         await user.save();
         res.json(user.notificationSettings);
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   PUT api/auth/profile
+// @desc    Update user profile (username, email, phone)
+router.put('/profile', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+
+        const { username, email, phone } = req.body;
+        
+        // If email or phone changes, we should ideally verify, but for simple MVP let's just update
+        if (username) user.username = username;
+        if (email) {
+            user.email = email.toLowerCase();
+            // user.isVerified = false; // Add this if you want to force re-verification
+        }
+        if (phone) user.phone = phone;
+
+        await user.save();
+        
+        // Return updated user object without password
+        const updatedUser = await User.findById(req.user.id).select('-password');
+        res.json({ ...updatedUser._doc, id: updatedUser._id });
+    } catch (err) {
+        if (err.code === 11000) {
+            return res.status(400).json({ msg: 'Email or phone number already in use by another account.' });
+        }
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   PUT api/auth/password
+// @desc    Update user password
+router.put('/password', auth, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+
+        const { currentPassword, newPassword } = req.body;
+        
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({ msg: 'Please provide both current and new passwords' });
+        }
+
+        const isMatch = await bcrypt.compare(currentPassword, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ msg: 'Incorrect current password' });
+        }
+
+        const salt = await bcrypt.genSalt(10);
+        user.password = await bcrypt.hash(newPassword, salt);
+        await user.save();
+
+        res.json({ msg: 'Password updated successfully' });
     } catch (err) {
         console.error(err.message);
         res.status(500).send('Server Error');

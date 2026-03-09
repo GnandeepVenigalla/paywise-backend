@@ -24,6 +24,8 @@
     "multer": "^2.0.2",
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.1",
+    "oci-common": "^2.126.0",
+    "oci-objectstorage": "^2.126.0",
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {

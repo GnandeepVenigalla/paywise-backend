@@ -16,11 +16,13 @@ const authRoutes = require('./routes/auth');
 const groupRoutes = require('./routes/groups');
 const expenseRoutes = require('./routes/expenses');
 const splitwiseRoutes = require('./routes/splitwise');
+const uploadRoutes = require('./routes/upload');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/expenses', expenseRoutes);
 app.use('/api/splitwise', splitwiseRoutes);
+app.use('/api/upload', uploadRoutes);
 
 // Schedulers
 const startSettleUpScheduler = require('./utils/settleUpScheduler');

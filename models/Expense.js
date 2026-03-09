@@ -20,7 +20,8 @@ const ExpenseSchema = new mongoose.Schema({
     isLoan: { type: Boolean, default: false },
     loanInterestRate: { type: Number, default: 0 },
     lastInterestApplied: { type: Date },
-    parentLoan: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense' }
+    parentLoan: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense' },
+    billImage: { type: String, default: null }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Expense', ExpenseSchema);

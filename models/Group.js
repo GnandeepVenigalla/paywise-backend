@@ -29,6 +29,10 @@ const GroupSchema = new mongoose.Schema({
     currency: {
         type: String,
         default: null
+    },
+    image: {
+        type: String,
+        default: null
     }
 }, { timestamps: true });
 

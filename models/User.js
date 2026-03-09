@@ -28,6 +28,10 @@ const UserSchema = new mongoose.Schema({
         type: String,
         required: true
     },
+    profilePic: {
+        type: String,
+        default: null
+    },
     resetPasswordToken: String,
     resetPasswordExpire: Date,
     isVerified: { type: Boolean, default: false },
