@@ -5,6 +5,7 @@ const Expense = require('../models/Expense');
 const Group = require('../models/Group');
 const Activity = require('../models/Activity');
 const Analytics = require('../models/Analytics');
+const Bug = require('../models/Bug');
 const auth = require('../middleware/auth');
 const logActivity = require('../utils/activityLogger');
 
@@ -347,7 +348,8 @@ router.delete('/users/:id', auth, isAdmin, checkPerms(['root', 'super_admin']), 
 router.post('/release/beta-link', auth, isAdmin, checkPerms(['root', 'super_admin']), async (req, res) => {
     try {
         const betaToken = require('crypto').randomBytes(16).toString('hex');
-        const betaUrl = `https://paywiseapp.com/beta?token=${betaToken}`;
+        // Use HashRouter format for GitHub Pages compatibility
+        const betaUrl = `https://www.paywiseapp.com/#/beta?token=${betaToken}`;
         
         await logActivity({
             user: req.user.id,
@@ -376,6 +378,65 @@ router.post('/release/deploy', auth, isAdmin, checkPerms(['root', 'super_admin']
         // In a real environment, you might use 'exec' to run a git push or trigger a webhook
         // For now, we simulate the success of the deployment pipeline
         res.json({ msg: 'Deployment signal sent to Git. Production update in progress.' });
+    } catch (err) {
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   GET api/admin/release/bugs
+// @desc    Get all beta bugs (Root/Super Admin)
+router.get('/release/bugs', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 'read_only']), async (req, res) => {
+    try {
+        const bugs = await Bug.find().populate('reporter', 'username').sort({ createdAt: -1 });
+        res.json(bugs);
+    } catch (err) {
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   POST api/admin/release/bugs
+// @desc    Report a new beta bug
+router.post('/release/bugs', auth, isAdmin, async (req, res) => {
+    try {
+        const { description, severity } = req.body;
+        const newBug = new Bug({
+            description,
+            severity,
+            reporter: req.user.id
+        });
+        await newBug.save();
+
+        await logActivity({
+            user: req.user.id,
+            action: `Reported beta bug: ${description.substring(0, 30)}...`,
+            category: 'system',
+            status: 'warning'
+        });
+
+        res.json(newBug);
+    } catch (err) {
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   PUT api/admin/release/bugs/:id/resolve
+// @desc    Mark bug as resolved
+router.put('/release/bugs/:id/resolve', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin']), async (req, res) => {
+    try {
+        const bug = await Bug.findById(req.params.id);
+        if (!bug) return res.status(404).json({ msg: 'Bug not found' });
+
+        bug.status = 'resolved';
+        await bug.save();
+
+        await logActivity({
+            user: req.user.id,
+            action: `Resolved beta bug: ${bug.description.substring(0, 30)}...`,
+            category: 'system',
+            status: 'success'
+        });
+
+        res.json(bug);
     } catch (err) {
         res.status(500).send('Server Error');
     }
