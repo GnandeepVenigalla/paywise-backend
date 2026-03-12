@@ -26,6 +26,18 @@ const AnalyticsSchema = new mongoose.Schema({
     adRevenue: {
         type: Number,
         default: 0
+    },
+    aiRequests: {
+        type: Number,
+        default: 0
+    },
+    aiInputTokens: {
+        type: Number,
+        default: 0
+    },
+    aiOutputTokens: {
+        type: Number,
+        default: 0
     }
 }, { timestamps: true });
 

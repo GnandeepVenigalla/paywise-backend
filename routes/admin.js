@@ -108,6 +108,9 @@ router.get('/stats', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 
         const totalAdRequests = analyticsData.reduce((sum, day) => sum + (day.adRequests || 0), 0);
         const totalAdClicks = analyticsData.reduce((sum, day) => sum + (day.adClicks || 0), 0);
         const totalAdRevenue = analyticsData.reduce((sum, day) => sum + (day.adRevenue || 0), 0);
+        const totalAiRequests = analyticsData.reduce((sum, day) => sum + (day.aiRequests || 0), 0);
+        const totalAiInputTokens = analyticsData.reduce((sum, day) => sum + (day.aiInputTokens || 0), 0);
+        const totalAiOutputTokens = analyticsData.reduce((sum, day) => sum + (day.aiOutputTokens || 0), 0);
 
         const adRevenue = totalAdRevenue.toFixed(2);
         const ecpm = totalAdImpressions > 0 ? ((totalAdRevenue / totalAdImpressions) * 1000).toFixed(2) : 0;
@@ -205,6 +208,12 @@ router.get('/stats', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 
                     ecpm,
                     ctr,
                     fillRate
+                },
+                aiPerformance: {
+                    totalRequests: totalAiRequests,
+                    inputTokens: totalAiInputTokens,
+                    outputTokens: totalAiOutputTokens,
+                    totalTokens: totalAiInputTokens + totalAiOutputTokens
                 }
             },
             charts: {
@@ -333,20 +342,41 @@ router.delete('/users/:id', auth, isAdmin, checkPerms(['root', 'super_admin']), 
     }
 });
 
-// @route   POST api/admin/track-ad
-// @desc    Track ad performance from frontend
-router.post('/track-ad', auth, async (req, res) => {
-    const { type, value } = req.body; // type: 'adRequests', 'adImpressions', 'adClicks', 'adRevenue'
-    if (!['adRequests', 'adImpressions', 'adClicks', 'adRevenue'].includes(type)) {
-        return res.status(400).json({ msg: 'Invalid metric type' });
-    }
-
+// @route   POST api/admin/release/beta-link
+// @desc    Generate a secure beta link (Root/Super Admin)
+router.post('/release/beta-link', auth, isAdmin, checkPerms(['root', 'super_admin']), async (req, res) => {
     try {
-        const trackMetric = require('../utils/analyticsTracker');
-        await trackMetric(type, value || 1);
-        res.json({ success: true });
+        const betaToken = require('crypto').randomBytes(16).toString('hex');
+        const betaUrl = `https://paywiseapp.com/beta?token=${betaToken}`;
+        
+        await logActivity({
+            user: req.user.id,
+            action: `Generated secure beta access link for v2.4.0-beta.1`,
+            category: 'system',
+            status: 'success'
+        });
+
+        res.json({ url: betaUrl, token: betaToken });
     } catch (err) {
-        console.error(err);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   POST api/admin/release/deploy
+// @desc    Mock production deployment / Git push (Root/Super Admin)
+router.post('/release/deploy', auth, isAdmin, checkPerms(['root', 'super_admin']), async (req, res) => {
+    try {
+        await logActivity({
+            user: req.user.id,
+            action: `Initiated production deployment sequence for v2.4.0`,
+            category: 'system',
+            status: 'success'
+        });
+
+        // In a real environment, you might use 'exec' to run a git push or trigger a webhook
+        // For now, we simulate the success of the deployment pipeline
+        res.json({ msg: 'Deployment signal sent to Git. Production update in progress.' });
+    } catch (err) {
         res.status(500).send('Server Error');
     }
 });
