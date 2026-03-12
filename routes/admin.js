@@ -1,0 +1,354 @@
+const express = require('express');
+const router = express.Router();
+const User = require('../models/User');
+const Expense = require('../models/Expense');
+const Group = require('../models/Group');
+const Activity = require('../models/Activity');
+const Analytics = require('../models/Analytics');
+const auth = require('../middleware/auth');
+const logActivity = require('../utils/activityLogger');
+
+// Middleware to check if user is admin
+// For now, let's assume all authenticated users can access admin for the dev phase
+// or we can check for a specific email or role if it existed.
+// Since no roles exist, I'll just use the auth middleware.
+// Middleware to check if user is admin
+const isAdmin = async (req, res, next) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(403).json({ msg: 'Access denied. User not found.' });
+
+        // Backup check: Ensure the root user always has access even if the role field isn't indexed yet
+        if (user.email === 'gnandeep.venigalla@paywiseapp.com') {
+            req.adminRole = 'root';
+            return next();
+        }
+
+        if (!user.adminRole) {
+            return res.status(403).json({ msg: 'Access denied. Admins only.' });
+        }
+        
+        req.adminRole = user.adminRole;
+        next();
+    } catch (err) {
+        res.status(500).send('Server Error');
+    }
+};
+
+// Middleware to check specific role permissions
+const checkPerms = (requiredRoles) => (req, res, next) => {
+    if (requiredRoles.includes(req.adminRole)) {
+        next();
+    } else {
+        res.status(403).json({ msg: `Permission denied. Required: ${requiredRoles.join(' or ')}` });
+    }
+};
+
+// @route   POST api/admin/council
+// @desc    Add a new employee/admin (Root only)
+router.post('/council', auth, isAdmin, checkPerms(['root']), async (req, res) => {
+    const { email, username, role } = req.body;
+    
+    if (!email || !email.endsWith('@paywiseapp.com')) {
+        return res.status(400).json({ msg: 'Valid @paywiseapp.com email required.' });
+    }
+
+    try {
+        let user = await User.findOne({ email });
+        
+        if (user) {
+            user.adminRole = role;
+            if (username) user.username = username;
+        } else {
+            user = new User({
+                username: username || email.split('@')[0],
+                email: email,
+                password: require('crypto').randomBytes(20).toString('hex'),
+                isVerified: true,
+                adminRole: role
+            });
+        }
+        
+        await user.save();
+
+        await logActivity({
+            user: req.user.id,
+            action: `Personnel ${user.username} clearance level updated to ${role}`,
+            category: 'system',
+            status: 'success'
+        });
+
+        res.json({ msg: 'Employee added/updated successfully', user });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   GET api/admin/stats
+// @desc    Get dashboard statistics
+router.get('/stats', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 'read_only']), async (req, res) => {
+    try {
+        const totalUsers = await User.countDocuments({ isGhostUser: false });
+        const totalExpenses = await Expense.countDocuments();
+        const totalGroups = await Group.countDocuments();
+        
+        // DAU/MAU Calculation
+        const now = new Date();
+        const last24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        const last30d = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        
+        const dau = await User.countDocuments({ lastActive: { $gte: last24h }, isGhostUser: false });
+        const mau = await User.countDocuments({ lastActive: { $gte: last30d }, isGhostUser: false });
+
+        // Aggregate Analytics
+        const analyticsData = await Analytics.find({ date: { $gte: last30d } });
+        const totalVisits = analyticsData.reduce((sum, day) => sum + (day.visits || 0), 0);
+        const totalAdImpressions = analyticsData.reduce((sum, day) => sum + (day.adImpressions || 0), 0);
+        const totalAdRequests = analyticsData.reduce((sum, day) => sum + (day.adRequests || 0), 0);
+        const totalAdClicks = analyticsData.reduce((sum, day) => sum + (day.adClicks || 0), 0);
+        const totalAdRevenue = analyticsData.reduce((sum, day) => sum + (day.adRevenue || 0), 0);
+
+        const adRevenue = totalAdRevenue.toFixed(2);
+        const ecpm = totalAdImpressions > 0 ? ((totalAdRevenue / totalAdImpressions) * 1000).toFixed(2) : 0;
+        const ctr = totalAdImpressions > 0 ? ((totalAdClicks / totalAdImpressions) * 100).toFixed(2) : 0;
+        const fillRate = totalAdRequests > 0 ? ((totalAdImpressions / totalAdRequests) * 100).toFixed(2) : 0;
+        
+        // Stats for the last 7 days
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+        const newUsersLast7Days = await User.countDocuments({ 
+            createdAt: { $gte: sevenDaysAgo },
+            isGhostUser: false 
+        });
+
+        // User growth data for chart
+        const userGrowth = [];
+        for (let i = 6; i >= 0; i--) {
+            const date = new Date();
+            date.setDate(date.getDate() - i);
+            const startOfDay = new Date(date.setHours(0, 0, 0, 0));
+            const endOfDay = new Date(date.setHours(23, 59, 59, 999));
+            
+            const count = await User.countDocuments({
+                createdAt: { $gte: startOfDay, $lte: endOfDay },
+                isGhostUser: false
+            });
+            
+            userGrowth.push({
+                date: startOfDay.toLocaleDateString('en-US', { weekday: 'short' }),
+                count
+            });
+        }
+
+        const activeSessions = await User.countDocuments({ lastActive: { $gte: new Date(Date.now() - 15 * 60 * 1000) }, isGhostUser: false });
+        const verifiedUsers = await User.countDocuments({ isVerified: true, isGhostUser: false });
+        const distinctTxUsers = await Expense.distinct('paidBy');
+        const usersWithTransactions = distinctTxUsers.length;
+        
+        const fraudAttempts = await Activity.countDocuments({ status: { $in: ['error', 'warning'] } });
+        const totalActivities = await Activity.countDocuments();
+        const fraudRate = totalActivities > 0 ? ((fraudAttempts / totalActivities) * 100).toFixed(2) : 0;
+
+        // Expense volume data for chart
+        const expenseVolume = [];
+        for (let i = 6; i >= 0; i--) {
+            const date = new Date();
+            date.setDate(date.getDate() - i);
+            const startOfDay = new Date(date.setHours(0, 0, 0, 0));
+            const endOfDay = new Date(date.setHours(23, 59, 59, 999));
+            
+            const expenses = await Expense.find({
+                createdAt: { $gte: startOfDay, $lte: endOfDay }
+            });
+            
+            const totalAmount = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
+            
+            expenseVolume.push({
+                date: startOfDay.toLocaleDateString('en-US', { weekday: 'short' }),
+                amount: totalAmount
+            });
+        }
+
+        // Fetch recent activities
+        const recentActivities = await Activity.find()
+            .populate('user', 'username email')
+            .sort({ createdAt: -1 })
+            .limit(10);
+
+        // Fetch top 10 most active users
+        const topUsers = await User.find({ isGhostUser: false, email: { $not: /@paywiseapp\.com$/ } })
+            .select('username email lastActive')
+            .sort({ lastActive: -1 })
+            .limit(10);
+
+        res.json({
+            summary: {
+                totalUsers,
+                totalExpenses,
+                adRevenue,
+                totalGroups,
+                newUsersLast7Days,
+                dau,
+                mau,
+                activeSessions,
+                verifiedUsers,
+                usersWithTransactions,
+                fraudRate,
+                fraudAttempts,
+                totalVisits,
+                adPerformance: {
+                    impressions: totalAdImpressions,
+                    requests: totalAdRequests,
+                    clicks: totalAdClicks,
+                    ecpm,
+                    ctr,
+                    fillRate
+                }
+            },
+            charts: {
+                userGrowth,
+                expenseVolume
+            },
+            recentActivities,
+            topUsers
+        });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   GET api/admin/users
+// @desc    Get regular users (excluding staff)
+router.get('/users', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 'moderator', 'read_only']), async (req, res) => {
+    try {
+        const users = await User.find({ 
+            isGhostUser: false,
+            email: { $not: /@paywiseapp\.com$/ } 
+        })
+            .select('-password')
+            .sort({ createdAt: -1 });
+        res.json(users);
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   GET api/admin/council
+// @desc    Get staff members (@paywiseapp.com)
+router.get('/council', auth, isAdmin, checkPerms(['root', 'super_admin']), async (req, res) => {
+    try {
+        const users = await User.find({ 
+            isGhostUser: false,
+            email: /@paywiseapp\.com$/ 
+        })
+            .select('-password')
+            .sort({ createdAt: -1 });
+        res.json(users);
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+
+
+// @route   POST api/admin/users/:id/action
+// @desc    Perform action on user (Root, Super Admin, Admin)
+router.post('/users/:id/action', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 'moderator']), async (req, res) => {
+    try {
+        const { action } = req.body;
+        const user = await User.findById(req.params.id);
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+        
+        if (action === 'freeze' || action === 'revoke') {
+            if (req.adminRole === 'moderator') return res.status(403).json({ msg: 'Moderators cannot freeze accounts.' });
+            user.isVerified = false;
+            await logActivity({
+                user: req.user.id,
+                action: `Access revoked / frozen for node ${user.username}`,
+                category: 'security',
+                status: 'warning'
+            });
+        } else if (action === 'unfreeze') {
+            if (req.adminRole === 'moderator') return res.status(403).json({ msg: 'Moderators cannot unfreeze accounts.' });
+            user.isVerified = true;
+            await logActivity({
+                user: req.user.id,
+                action: `Access restored / unfrozen for node ${user.username}`,
+                category: 'security',
+                status: 'success'
+            });
+        } else if (action === 'flag') {
+            user.isVerified = false; // Just un-verifying acts as a flag for now
+            await logActivity({
+                user: req.user.id,
+                action: `Node ${user.username} flagged for review`,
+                category: 'security',
+                status: 'warning'
+            });
+        } else if (action === 'verify') {
+            user.isVerified = true;
+            await logActivity({
+                user: req.user.id,
+                action: `Node ${user.username} verification confirmed`,
+                category: 'security',
+                status: 'success'
+            });
+        } else {
+            return res.status(400).json({ msg: 'Invalid action' });
+        }
+        
+        await user.save();
+        res.json({ msg: `Action ${action} executed` });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   DELETE api/admin/users/:id
+// @desc    Delete a user (Super Admin & Root only)
+router.delete('/users/:id', auth, isAdmin, checkPerms(['root', 'super_admin']), async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id);
+        const username = user ? user.username : 'Unknown';
+        
+        await User.findByIdAndDelete(req.params.id);
+
+        await logActivity({
+            user: req.user.id,
+            action: `Node ${username} permanently purged from kernel`,
+            category: 'security',
+            status: 'error'
+        });
+
+        res.json({ msg: 'User permanently purged from system' });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   POST api/admin/track-ad
+// @desc    Track ad performance from frontend
+router.post('/track-ad', auth, async (req, res) => {
+    const { type, value } = req.body; // type: 'adRequests', 'adImpressions', 'adClicks', 'adRevenue'
+    if (!['adRequests', 'adImpressions', 'adClicks', 'adRevenue'].includes(type)) {
+        return res.status(400).json({ msg: 'Invalid metric type' });
+    }
+
+    try {
+        const trackMetric = require('../utils/analyticsTracker');
+        await trackMetric(type, value || 1);
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Server Error');
+    }
+});
+
+module.exports = router;

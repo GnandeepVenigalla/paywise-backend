@@ -5,6 +5,7 @@ const Expense = require('../models/Expense');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
 const sendEmail = require('../utils/sendEmail');
+const logActivity = require('../utils/activityLogger');
 
 // @route   POST api/groups
 // @desc    Create a group
@@ -22,6 +23,14 @@ router.post('/', auth, async (req, res) => {
         });
 
         const group = await newGroup.save();
+        
+        await logActivity({
+            user: req.user.id,
+            action: `New group initialized: "${name}"`,
+            category: 'group',
+            status: 'success'
+        });
+
         res.json(group);
     } catch (err) {
         console.error(err.message);

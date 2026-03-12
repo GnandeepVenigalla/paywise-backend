@@ -30,6 +30,7 @@ const sendEmail = async (options) => {
         console.log('Subject:', options.subject);
         console.log('Message:', options.message);
         console.log('----------------------------------------------------');
+        require('fs').writeFileSync('/tmp/paywise_otp.txt', options.message);
         return;
     }
 

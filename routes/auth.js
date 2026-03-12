@@ -7,6 +7,7 @@ const User = require('../models/User');
 const Report = require('../models/Report');
 const auth = require('../middleware/auth');
 const sendEmail = require('../utils/sendEmail');
+const logActivity = require('../utils/activityLogger');
 
 // @route   POST api/auth/register
 // @desc    Register user (promotes ghost accounts from Splitwise migration)
@@ -104,6 +105,58 @@ router.post('/login', async (req, res) => {
     }
 });
 
+// @route   POST api/auth/admin-login-otp
+// @desc    Request OTP for passwordless admin login
+router.post('/admin-login-otp', async (req, res) => {
+    let { email } = req.body;
+    if (email) email = email.toLowerCase();
+    
+    // Only allow @paywiseapp.com emails
+    if (!email || !email.endsWith('@paywiseapp.com')) {
+        return res.status(403).json({ msg: 'Access denied. Valid @paywiseapp.com email required.' });
+    }
+
+    try {
+        let user = await User.findOne({ email });
+        
+        // Gnandeep is the Super Super Admin (Root)
+        const isRoot = email === 'gnandeep.venigalla@paywiseapp.com';
+
+        if (isRoot) {
+            if (!user) {
+                // If user doesn't exist, create them as root
+                user = new User({
+                    username: 'Gnandeep',
+                    email: email,
+                    password: crypto.randomBytes(20).toString('hex'),
+                    isVerified: true,
+                    adminRole: 'root'
+                });
+            } else if (user.adminRole !== 'root') {
+                // If they exist but don't have the root role, PROMOTE them
+                user.adminRole = 'root';
+            }
+            await user.save();
+        } else if (!user || !user.adminRole) {
+            // If they are not root and don't have an admin role, they can't login
+            return res.status(403).json({ msg: 'Unauthorized. You have not been added as an admin.' });
+        }
+
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        user.emailVerificationOtp = crypto.createHash('sha256').update(otp).digest('hex');
+        user.emailVerificationExpire = Date.now() + 10 * 60 * 1000;
+        await user.save();
+
+        const message = `Paywise Admin Access\n\nYour verification code is: ${otp}\n\nThis code is valid for 10 minutes. If you did not request this, please contact security.`;
+        await sendEmail({ email: user.email, subject: 'Paywise Admin Verification Code', message });
+
+        res.json({ msg: 'Verification code sent to email', requireOtp: true });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server error');
+    }
+});
+
 // @route   POST api/auth/verify-otp
 // @desc    Verify OTP and return token
 router.post('/verify-otp', async (req, res) => {
@@ -118,15 +171,33 @@ router.post('/verify-otp', async (req, res) => {
             return res.status(400).json({ msg: 'Invalid or expired verification code' });
         }
 
-        user.isVerified = true;
         user.emailVerificationOtp = undefined;
         user.emailVerificationExpire = undefined;
+        user.lastActive = new Date();
         await user.save();
+
+        const trackMetric = require('../utils/analyticsTracker');
+        await trackMetric('visits', 1);
+
+        await logActivity({
+            user: user._id,
+            action: user.adminRole ? `Portal access granted: ${user.adminRole.toUpperCase()}` : 'Node connection established (Login)',
+            category: user.adminRole ? 'system' : 'user',
+            status: 'success'
+        });
 
         const payload = { user: { id: user.id } };
         jwt.sign(payload, process.env.JWT_SECRET || 'secret', { expiresIn: 360000 }, (err, token) => {
             if (err) throw err;
-            res.json({ token, user: { id: user.id, username: user.username, email: user.email } });
+            res.json({ 
+                token, 
+                user: { 
+                    id: user.id, 
+                    username: user.username, 
+                    email: user.email,
+                    adminRole: user.adminRole 
+                } 
+            });
         });
     } catch (err) {
         console.error(err.message);

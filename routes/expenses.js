@@ -3,6 +3,7 @@ const router = express.Router();
 const Expense = require('../models/Expense');
 const auth = require('../middleware/auth');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const logActivity = require('../utils/activityLogger');
 
 // @route   POST api/expenses
 // @desc    Add an expense
@@ -39,6 +40,14 @@ router.post('/', auth, async (req, res) => {
             { path: 'splits.user', select: 'username email' },
             { path: 'items.assignedTo', select: 'username email' }
         ]);
+
+        await logActivity({
+            user: req.user.id,
+            action: `New expense recorded: "${description}" ($${amount})`,
+            category: 'expense',
+            status: 'success'
+        });
+
         res.json(expense);
     } catch (err) {
         console.error(err.message);

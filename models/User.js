@@ -97,6 +97,15 @@ const UserSchema = new mongoose.Schema({
     // their account is promoted to a full account automatically.
     isGhostUser: { type: Boolean, default: false },
     avatarInitials: { type: String }, // stored so ghost user displays correctly
+    adminRole: { 
+        type: String, 
+        enum: ['root', 'super_admin', 'admin', 'moderator', 'read_only'],
+        default: null 
+    },
+    lastActive: {
+        type: Date,
+        default: Date.now
+    }
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', UserSchema);
