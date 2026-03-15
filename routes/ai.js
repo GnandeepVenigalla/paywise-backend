@@ -208,15 +208,8 @@ router.post('/chat', auth, async (req, res) => {
             }
         }
 
-        // --- PRODUCTION FALLBACK PROTECTION ---
-        // If all models fail, we return a friendly message instead of a 500/JSON error
-        if (!result) {
-            console.error('All AI models failed. Sending friendly fallback.');
-            return res.json({ 
-                reply: "I'm sorry, I'm taking a quick power nap to stay sharp! ⚡\n\nI couldn't process that request right now, but you can try again in a few seconds or use the 'Add Expense' button on your dashboard to do it manually. I'll be back shortly!" 
-            });
-        }
-        
+        if (!result) throw new Error("All AI models failed to respond");
+
         const responseText = result.response.text();
 
         // Analytics Tracking (Safe)
@@ -232,10 +225,9 @@ router.post('/chat', auth, async (req, res) => {
 
         res.json({ reply: responseText });
     } catch (err) {
-        console.error('Critical AI Failure:', err);
-        // Absolute last resort fallback
+        console.error('AI Processing Error:', err.message);
         res.json({ 
-            reply: "I'm having a bit of trouble connecting to my brain right now. Please try again in 10 seconds!" 
+            reply: "My brain is taking a quick power nap! (AI service is currently saturated). ⚡\n\nI couldn't process that request right now, but you can try again in a few seconds." 
         });
     }
 });
