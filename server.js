@@ -19,6 +19,7 @@ const splitwiseRoutes = require('./routes/splitwise');
 const uploadRoutes = require('./routes/upload');
 const adminRoutes = require('./routes/admin');
 const aiRoutes = require('./routes/ai');
+const analyticsRoutes = require('./routes/analytics');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/groups', groupRoutes);
@@ -27,6 +28,7 @@ app.use('/api/splitwise', splitwiseRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/analytics', analyticsRoutes);
 
 // Schedulers
 const startSettleUpScheduler = require('./utils/settleUpScheduler');

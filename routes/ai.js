@@ -47,7 +47,7 @@ router.get('/suggestions', auth, async (req, res) => {
     }
 });
 
-// Helper to get user context for AI
+// Helper to get user context for AI (including real balances)
 async function getUserContext(userId) {
     const user = await User.findById(userId).populate('friends', 'username email');
     const groups = await Group.find({ members: userId }).populate('members', 'username email');
@@ -56,16 +56,73 @@ async function getUserContext(userId) {
             { paidBy: userId },
             { 'splits.user': userId }
         ]
-    }).sort({ date: -1 }).limit(5).populate('paidBy', 'username').populate('group', 'name');
+    }).sort({ date: -1 }).limit(10).populate('paidBy', 'username').populate('group', 'name');
+
+    const { convertAmount } = require('../utils/currency');
+
+    // 1. Calculate Friend Balances
+    const friendsContext = await Promise.all(user.friends.map(async (friend) => {
+        const expenses = await Expense.find({
+            group: null,
+            $or: [
+                { paidBy: userId, 'splits.user': friend._id },
+                { paidBy: friend._id, 'splits.user': userId }
+            ]
+        });
+
+        let balance = 0; 
+        expenses.forEach(exp => {
+            const isPaidByMe = exp.paidBy.toString() === userId.toString();
+            const sourceCurr = exp.currency || 'USD';
+            if (isPaidByMe) {
+                const friendSplit = exp.splits.find(s => s.user.toString() === friend._id.toString());
+                if (friendSplit) balance += convertAmount(friendSplit.amount, sourceCurr, 'USD');
+            } else {
+                const mySplit = exp.splits.find(s => s.user.toString() === userId.toString());
+                if (mySplit) balance -= convertAmount(mySplit.amount, sourceCurr, 'USD');
+            }
+        });
+
+        return { id: friend._id, username: friend.username, netBalance: balance.toFixed(2) };
+    }));
+
+    // 2. Calculate Group Balances (from user's perspective)
+    const groupsContext = await Promise.all(groups.map(async (group) => {
+        const expenses = await Expense.find({ group: group._id });
+        let userBalance = 0;
+
+        expenses.forEach(exp => {
+            const payerId = exp.paidBy.toString();
+            const sourceCurr = exp.currency || 'USD';
+            
+            // If I paid, I'm owed the sum of others' splits
+            if (payerId === userId.toString()) {
+                exp.splits.forEach(split => {
+                    if (split.user.toString() !== userId.toString()) {
+                        userBalance += convertAmount(split.amount, sourceCurr, 'USD');
+                    }
+                });
+            } else {
+                // If someone else paid, I owe my split
+                const mySplit = exp.splits.find(s => s.user.toString() === userId.toString());
+                if (mySplit) {
+                    userBalance -= convertAmount(mySplit.amount, sourceCurr, 'USD');
+                }
+            }
+        });
+
+        return { 
+            id: group._id, 
+            name: group.name, 
+            myNetBalanceInGroup: userBalance.toFixed(2),
+            members: group.members.map(m => ({ id: m._id, username: m.username }))
+        };
+    }));
 
     return {
         user: { username: user.username, email: user.email },
-        friends: user.friends.map(f => ({ id: f._id, username: f.username })),
-        groups: groups.map(g => ({ 
-            id: g._id, 
-            name: g.name, 
-            members: g.members.map(m => ({ id: m._id, username: m.username }))
-        })),
+        friends: friendsContext,
+        groups: groupsContext,
         recentExpenses: recentExpenses.map(e => ({
             id: e._id,
             description: e.description,
@@ -90,79 +147,45 @@ router.post('/chat', auth, async (req, res) => {
         const userId = req.user.id;
         
         const prompt = `
-            You are "Paywise AI", a helpful financial assistant for the Paywise app.
+            You are "Paywise AI", the master financial strategist for the Paywise app.
             
             Current User: ${context.user.username}
-            User's Friends: ${JSON.stringify(context.friends)}
-            User's Groups: ${JSON.stringify(context.groups)}
-            Recent Activity: ${JSON.stringify(context.recentExpenses)}
+            User's Friends & Balances: ${JSON.stringify(context.friends || [])} (netBalance > 0 means they owe user, < 0 means user owes them)
+            User's Groups & Balances: ${JSON.stringify(context.groups || [])} (myNetBalanceInGroup is the user's total stake)
+            Recent Activity: ${JSON.stringify(context.recentExpenses || [])}
             Current Date: ${new Date().toLocaleDateString()}
+            Base Currency: USD
 
             YOUR CAPABILITIES:
-            1. Answer questions about spending habits.
-            2. Suggest adding expenses.
-            3. Identify friends or groups from user messages.
-            4. Delete recent expenses if requested.
+            1. BALANCE CHECK: Answer questions like "What do I owe Suzz?" or "Who owes me money?". Use the provided balances.
+            2. ADD EXPENSE: Propose adding new expenses based on conversations. Identify description, amount, recipientType, recipientId, participants, splitMethod, and paidBy.
+            3. DELETE EXPENSE: Identify and propose deleting recent transactions.
+            4. ADVICE: Give witty, helpful financial tips based on spending.
 
             ACTION PROTOCOL:
-            If the user wants to add an expense, you MUST identify:
+            If adding an expense:
             - type: "ADD_EXPENSE"
-            - description, amount, recipientType, recipientId, participants, splitMethod
-            - paidBy (The ID of the person who paid. If the user says "Suzz paid", use Suzz's ID. If not mentioned, default to "${userId}")
-
-            If the user wants to delete an expense (e.g., "Delete the $255 expense"), look for a match in "Recent Activity" and identify:
-            - type: "DELETE_EXPENSE"
-            - expenseId (the ID of the matching expense)
-            - description (the description from the activity list)
-            - amount (the amount from the activity list)
-
+            - Default paidBy to "${userId}" unless specified otherwise.
+            - If user says "Paid $20 for coffee with Suzz", default recipientId to Suzz's ID, participants: ["${userId}", Suzz's ID].
+            
             CRITICAL RULES:
-            - If you have an amount and a recipient (friend or group), you MUST generate the [ACTION] block immediately. Do not ask for more details first.
-            - If the user specifies "food", use "Food" as the description.
+            - ALWAYS generate the [ACTION] block if the user's intent is clear.
+            - If a friend owes money (netBalance > 0), be encouraging. If user owes (netBalance < 0), be subtle.
             - The CURRENT USER'S ID is: "${userId}"
 
             Response Format:
-            - Provide a brief helpful text.
+            - Provide a brief helpful/witty text.
             - Follow it IMMEDIATELY with the JSON action block: [ACTION]{...}[/ACTION].
-
-            Example Add Action:
-            [ACTION]
-            {
-                "type": "ADD_EXPENSE",
-                "data": {
-                    "description": "Lunch",
-                    "amount": 25,
-                    "recipientType": "friend",
-                    "recipientId": "123...",
-                    "paidBy": "123...",
-                    "participants": ["${userId}", "123..."],
-                    "splitMethod": "equally"
-                }
-            }
-            [/ACTION]
-
-            Example Delete Action:
-            [ACTION]
-            {
-                "type": "DELETE_EXPENSE",
-                "data": {
-                    "expenseId": "67b...",
-                    "description": "Food split",
-                    "amount": 255
-                }
-            }
-            [/ACTION]
 
             User Message: "${message}"
         `;
 
-        // Try multiple models in case one is busy or missing
         const modelsToTry = [
             "gemini-2.5-flash",
+            "gemini-2.5-pro",
             "gemini-2.0-flash",
-            "gemini-1.5-flash-latest",
-            "gemini-1.5-flash",
-            "gemini-1.5-pro"
+            "gemini-flash-latest",
+            "gemini-pro-latest"
         ];
         let result;
         let lastErr;
@@ -170,23 +193,18 @@ router.post('/chat', auth, async (req, res) => {
         for (const modelName of modelsToTry) {
             try {
                 const model = genAI.getGenerativeModel({ model: modelName });
-                // Add a timeout/race to prevent hanging
                 const response = await Promise.race([
                     model.generateContent(prompt),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 8000))
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 20000))
                 ]);
                 
-                if (response) {
+                if (response && response.response) {
                     result = response;
                     break;
                 }
             } catch (err) {
-                console.warn(`AI model ${modelName} failed, trying next...`);
+                console.warn(`AI attempt with ${modelName} failed:`, err.message);
                 lastErr = err;
-                // Tiny delay before next attempt if it was a rate limit
-                if (err.status === 429 || err.status === 503) {
-                    await new Promise(r => setTimeout(r, 500));
-                }
             }
         }
 

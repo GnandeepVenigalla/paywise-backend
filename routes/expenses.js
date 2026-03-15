@@ -9,8 +9,9 @@ const logActivity = require('../utils/activityLogger');
 // @desc    Add an expense
 router.post('/', auth, async (req, res) => {
     try {
-        const { description, amount, group, paidBy, splits, items } = req.body;
+        const { description, amount, currency, group, paidBy, splits, items } = req.body;
         const User = require('../models/User');
+        const { getCurrencySymbol } = require('../utils/currency');
 
         // Check if any participant has blocked the other
         const currentUser = await User.findById(req.user.id);
@@ -27,6 +28,7 @@ router.post('/', auth, async (req, res) => {
         const newExpense = new Expense({
             description,
             amount,
+            currency: currency || 'USD',
             group: group || null,
             paidBy: paidBy || req.user.id,
             addedBy: req.user.id,
@@ -41,9 +43,10 @@ router.post('/', auth, async (req, res) => {
             { path: 'items.assignedTo', select: 'username email' }
         ]);
 
+        const sym = getCurrencySymbol(currency || 'USD');
         await logActivity({
             user: req.user.id,
-            action: `New expense recorded: "${description}" ($${amount})`,
+            action: `New expense recorded: "${description}" (${sym}${amount})`,
             category: 'expense',
             status: 'success'
         });
@@ -146,18 +149,25 @@ router.post('/scan', auth, async (req, res) => {
         const base64Data = imageBase64.replace(/^data:image\/\w+;base64,/, "");
 
         const prompt = `
-            Analyze this receipt image. 
-            Extract the individual line items purchased, their prices, and any additional fees such as Tax, Auto Gratuity, Operating Fees, Service Fees, or Surcharges if present.
-            Do NOT include the total, discounted cash total, subtotal, change, or card information.
-            Filter out SKUs, store IDs, and leading characters. Keep the product names as clean human-readable text. For tax, name it "Tax". For gratuity, name it "Auto Gratuity", etc.
+            Analyze this receipt image from a Global perspective. 
+            Extract EVERY individual line item purchased, including their clean names and precise prices.
+            
+            CRITICAL - DISCOUNT HANDLING:
+            - Look for discounts, coupons, or rebates (often shown with a minus sign like "4.00-" or "-4.00").
+            - You MUST subtract these discounts from the item they belong to. 
+            - For example, if you see "Polo Shirt 16.99" followed by "Discount 4.00-", you should return ONE item: "Polo Shirt" with price 12.99.
+            - Do not list discounts as separate items unless you cannot identify the parent item.
+            
+            CRITICAL - TAXES:
+            - You MUST detect and extract all additional fees, taxes, and surcharges using their localized names (GST, IVA, VAT, Tax, etc.).
+            - These SHOULD be separate line items.
+            
             Format your response STRICTLY as a JSON array of objects with "name" and "price" (number). 
             Example output format EXACTLY:
             [ 
-              {"name": "Bananas", "price": 1.99},
-              {"name": "Mediterranean Salad", "price": 8.99},
-              {"name": "Tax", "price": 0.50},
-              {"name": "Auto Gratuity", "price": 5.00},
-              {"name": "Operating Fee", "price": 2.50}
+              {"name": "Item A", "price": 12.99}, (Result of 16.99 - 4.00 discount)
+              {"name": "IVA @21%", "price": 15.60},
+              {"name": "Service Charge", "price": 12.00}
             ]
         `;
 
@@ -231,9 +241,10 @@ router.put('/:id', auth, async (req, res) => {
             return res.status(401).json({ msg: 'Only the person who uploaded this expense can edit it' });
         }
 
-        const { description, amount, splits, items } = req.body;
+        const { description, amount, currency, splits, items } = req.body;
 
         if (description) expense.description = description;
+        if (currency) expense.currency = currency;
 
         if (amount && Number(amount) !== expense.amount) {
             const newAmount = Number(amount);

@@ -39,8 +39,22 @@ const convertAmount = (amount, from = 'USD', to = 'USD') => {
     return amount * (rate_to / rate_from);
 };
 
+/**
+ * Get the currency symbol for a given currency code.
+ */
+const getCurrencySymbol = (code) => {
+    const symbols = {
+        USD: '$', EUR: '€', GBP: '£', INR: '₹', JPY: '¥',
+        CAD: 'CA$', AUD: 'A$', CHF: 'Fr', CNY: '¥', MXN: 'MX$',
+        BRL: 'R$', KRW: '₩', SGD: 'S$', HKD: 'HK$',
+        SEK: 'kr', NOK: 'kr', DKK: 'kr', NZD: 'NZ$', ZAR: 'R', AED: 'د.إ',
+    };
+    return symbols[code] || '$';
+};
+
 module.exports = {
     convertAmount,
     EXCHANGE_RATES,
-    updateRates
+    updateRates,
+    getCurrencySymbol
 };

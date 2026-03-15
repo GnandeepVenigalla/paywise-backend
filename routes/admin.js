@@ -344,12 +344,12 @@ router.delete('/users/:id', auth, isAdmin, checkPerms(['root', 'super_admin']), 
 });
 
 // @route   POST api/admin/release/beta-link
-// @desc    Generate a secure beta link (Root/Super Admin)
-router.post('/release/beta-link', auth, isAdmin, checkPerms(['root', 'super_admin']), async (req, res) => {
+// @desc    Generate a secure beta link (Root/Super Admin/Admin)
+router.post('/release/beta-link', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin']), async (req, res) => {
     try {
         const betaToken = require('crypto').randomBytes(16).toString('hex');
         // Use HashRouter format for GitHub Pages compatibility
-        const betaUrl = `https://www.paywiseapp.com/#/beta?token=${betaToken}`;
+        const betaUrl = `https://paywise-two.vercel.app/#/beta?token=${betaToken}`;
         
         await logActivity({
             user: req.user.id,
