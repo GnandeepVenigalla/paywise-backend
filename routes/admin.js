@@ -28,7 +28,7 @@ const isAdmin = async (req, res, next) => {
         if (!user.adminRole) {
             return res.status(403).json({ msg: 'Access denied. Admins only.' });
         }
-        
+
         req.adminRole = user.adminRole;
         next();
     } catch (err) {
@@ -49,14 +49,14 @@ const checkPerms = (requiredRoles) => (req, res, next) => {
 // @desc    Add a new employee/admin (Root only)
 router.post('/council', auth, isAdmin, checkPerms(['root']), async (req, res) => {
     const { email, username, role } = req.body;
-    
+
     if (!email || !email.endsWith('@paywiseapp.com')) {
         return res.status(400).json({ msg: 'Valid @paywiseapp.com email required.' });
     }
 
     try {
         let user = await User.findOne({ email });
-        
+
         if (user) {
             user.adminRole = role;
             if (username) user.username = username;
@@ -69,7 +69,7 @@ router.post('/council', auth, isAdmin, checkPerms(['root']), async (req, res) =>
                 adminRole: role
             });
         }
-        
+
         await user.save();
 
         await logActivity({
@@ -93,12 +93,12 @@ router.get('/stats', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 
         const totalUsers = await User.countDocuments({ isGhostUser: false });
         const totalExpenses = await Expense.countDocuments();
         const totalGroups = await Group.countDocuments();
-        
+
         // DAU/MAU Calculation
         const now = new Date();
         const last24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
         const last30d = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        
+
         const dau = await User.countDocuments({ lastActive: { $gte: last24h }, isGhostUser: false });
         const mau = await User.countDocuments({ lastActive: { $gte: last30d }, isGhostUser: false });
 
@@ -117,14 +117,14 @@ router.get('/stats', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 
         const ecpm = totalAdImpressions > 0 ? ((totalAdRevenue / totalAdImpressions) * 1000).toFixed(2) : 0;
         const ctr = totalAdImpressions > 0 ? ((totalAdClicks / totalAdImpressions) * 100).toFixed(2) : 0;
         const fillRate = totalAdRequests > 0 ? ((totalAdImpressions / totalAdRequests) * 100).toFixed(2) : 0;
-        
+
         // Stats for the last 7 days
         const sevenDaysAgo = new Date();
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-        const newUsersLast7Days = await User.countDocuments({ 
+        const newUsersLast7Days = await User.countDocuments({
             createdAt: { $gte: sevenDaysAgo },
-            isGhostUser: false 
+            isGhostUser: false
         });
 
         // User growth data for chart
@@ -134,12 +134,12 @@ router.get('/stats', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 
             date.setDate(date.getDate() - i);
             const startOfDay = new Date(date.setHours(0, 0, 0, 0));
             const endOfDay = new Date(date.setHours(23, 59, 59, 999));
-            
+
             const count = await User.countDocuments({
                 createdAt: { $gte: startOfDay, $lte: endOfDay },
                 isGhostUser: false
             });
-            
+
             userGrowth.push({
                 date: startOfDay.toLocaleDateString('en-US', { weekday: 'short' }),
                 count
@@ -150,7 +150,7 @@ router.get('/stats', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 
         const verifiedUsers = await User.countDocuments({ isVerified: true, isGhostUser: false });
         const distinctTxUsers = await Expense.distinct('paidBy');
         const usersWithTransactions = distinctTxUsers.length;
-        
+
         const fraudAttempts = await Activity.countDocuments({ status: { $in: ['error', 'warning'] } });
         const totalActivities = await Activity.countDocuments();
         const fraudRate = totalActivities > 0 ? ((fraudAttempts / totalActivities) * 100).toFixed(2) : 0;
@@ -162,13 +162,13 @@ router.get('/stats', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 
             date.setDate(date.getDate() - i);
             const startOfDay = new Date(date.setHours(0, 0, 0, 0));
             const endOfDay = new Date(date.setHours(23, 59, 59, 999));
-            
+
             const expenses = await Expense.find({
                 createdAt: { $gte: startOfDay, $lte: endOfDay }
             });
-            
+
             const totalAmount = expenses.reduce((sum, exp) => sum + (exp.amount || 0), 0);
-            
+
             expenseVolume.push({
                 date: startOfDay.toLocaleDateString('en-US', { weekday: 'short' }),
                 amount: totalAmount
@@ -234,9 +234,9 @@ router.get('/stats', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 
 // @desc    Get regular users (excluding staff)
 router.get('/users', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 'moderator', 'read_only']), async (req, res) => {
     try {
-        const users = await User.find({ 
+        const users = await User.find({
             isGhostUser: false,
-            email: { $not: /@paywiseapp\.com$/ } 
+            email: { $not: /@paywiseapp\.com$/ }
         })
             .select('-password')
             .sort({ createdAt: -1 });
@@ -251,9 +251,9 @@ router.get('/users', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 
 // @desc    Get staff members (@paywiseapp.com)
 router.get('/council', auth, isAdmin, checkPerms(['root', 'super_admin']), async (req, res) => {
     try {
-        const users = await User.find({ 
+        const users = await User.find({
             isGhostUser: false,
-            email: /@paywiseapp\.com$/ 
+            email: /@paywiseapp\.com$/
         })
             .select('-password')
             .sort({ createdAt: -1 });
@@ -273,7 +273,7 @@ router.post('/users/:id/action', auth, isAdmin, checkPerms(['root', 'super_admin
         const { action } = req.body;
         const user = await User.findById(req.params.id);
         if (!user) return res.status(404).json({ msg: 'User not found' });
-        
+
         if (action === 'freeze' || action === 'revoke') {
             if (req.adminRole === 'moderator') return res.status(403).json({ msg: 'Moderators cannot freeze accounts.' });
             user.isVerified = false;
@@ -311,7 +311,7 @@ router.post('/users/:id/action', auth, isAdmin, checkPerms(['root', 'super_admin
         } else {
             return res.status(400).json({ msg: 'Invalid action' });
         }
-        
+
         await user.save();
         res.json({ msg: `Action ${action} executed` });
     } catch (err) {
@@ -326,7 +326,7 @@ router.delete('/users/:id', auth, isAdmin, checkPerms(['root', 'super_admin']), 
     try {
         const user = await User.findById(req.params.id);
         const username = user ? user.username : 'Unknown';
-        
+
         await User.findByIdAndDelete(req.params.id);
 
         await logActivity({
@@ -350,7 +350,7 @@ router.post('/release/beta-link', auth, isAdmin, checkPerms(['root', 'super_admi
         const betaToken = require('crypto').randomBytes(16).toString('hex');
         // Use HashRouter format for GitHub Pages compatibility
         const betaUrl = `https://paywise-two.vercel.app/#/beta?token=${betaToken}`;
-        
+
         await logActivity({
             user: req.user.id,
             action: `Generated secure beta access link for v2.4.0-beta.1`,
