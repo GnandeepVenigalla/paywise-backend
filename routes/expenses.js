@@ -9,7 +9,7 @@ const logActivity = require('../utils/activityLogger');
 // @desc    Add an expense
 router.post('/', auth, async (req, res) => {
     try {
-        const { description, amount, currency, group, paidBy, splits, items } = req.body;
+        const { description, amount, currency, group, paidBy, splits, items, isLoan, loanInterestRate } = req.body;
         const User = require('../models/User');
         const { getCurrencySymbol } = require('../utils/currency');
 
@@ -33,7 +33,9 @@ router.post('/', auth, async (req, res) => {
             paidBy: paidBy || req.user.id,
             addedBy: req.user.id,
             splits,
-            items: items || []
+            items: items || [],
+            isLoan: isLoan || false,
+            loanInterestRate: loanInterestRate || 0
         });
 
         let expense = await newExpense.save();
@@ -241,7 +243,7 @@ router.put('/:id', auth, async (req, res) => {
             return res.status(401).json({ msg: 'Only the person who uploaded this expense can edit it' });
         }
 
-        const { description, amount, currency, splits, items } = req.body;
+        const { description, amount, currency, splits, items, isLoan, loanInterestRate } = req.body;
 
         if (description) expense.description = description;
         if (currency) expense.currency = currency;
@@ -268,6 +270,8 @@ router.put('/:id', auth, async (req, res) => {
 
         if (splits) expense.splits = splits;
         if (items) expense.items = items;
+        if (typeof isLoan !== 'undefined') expense.isLoan = isLoan;
+        if (typeof loanInterestRate !== 'undefined') expense.loanInterestRate = loanInterestRate;
 
         await expense.save();
 

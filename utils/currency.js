@@ -33,9 +33,12 @@ const updateRates = async () => {
  * @param {string} to - Target ISO code (default: 'USD')
  */
 const convertAmount = (amount, from = 'USD', to = 'USD') => {
-    if (!amount || from === to) return amount;
-    const rate_from = EXCHANGE_RATES[from] || 1;
-    const rate_to = EXCHANGE_RATES[to] || 1;
+    if (!amount) return 0;
+    const f = from.toUpperCase();
+    const t = to.toUpperCase();
+    if (f === t) return amount;
+    const rate_from = EXCHANGE_RATES[f] || 1;
+    const rate_to = EXCHANGE_RATES[t] || 1;
     return amount * (rate_to / rate_from);
 };
 
@@ -49,7 +52,7 @@ const getCurrencySymbol = (code) => {
         BRL: 'R$', KRW: '₩', SGD: 'S$', HKD: 'HK$',
         SEK: 'kr', NOK: 'kr', DKK: 'kr', NZD: 'NZ$', ZAR: 'R', AED: 'د.إ',
     };
-    return symbols[code] || '$';
+    return symbols[code?.toUpperCase()] || '$';
 };
 
 module.exports = {
