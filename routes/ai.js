@@ -83,7 +83,7 @@ async function getUserContext(userId) {
             }
         });
 
-        return { id: friend._id, username: friend.username, netBalance: balance.toFixed(2) };
+        return { id: friend._id.toString(), username: friend.username, netBalance: balance.toFixed(2) };
     }));
 
     // 2. Calculate Group Balances (from user's perspective)
@@ -112,10 +112,10 @@ async function getUserContext(userId) {
         });
 
         return { 
-            id: group._id, 
+            id: group._id.toString(), 
             name: group.name, 
             myNetBalanceInGroup: userBalance.toFixed(2),
-            members: group.members.map(m => ({ id: m._id, username: m.username }))
+            members: group.members.map(m => ({ id: m._id.toString(), username: m.username }))
         };
     }));
 
@@ -124,7 +124,7 @@ async function getUserContext(userId) {
         friends: friendsContext,
         groups: groupsContext,
         recentExpenses: recentExpenses.map(e => ({
-            id: e._id,
+            id: e._id.toString(),
             description: e.description,
             amount: e.amount,
             date: e.date,
@@ -145,47 +145,126 @@ router.post('/chat', auth, async (req, res) => {
 
         const context = await getUserContext(req.user.id);
         const userId = req.user.id;
-        
-        const prompt = `
-            You are "Paywise AI", the master financial strategist for the Paywise app.
-            
-            Current User: ${context.user.username}
-            User's Friends & Balances: ${JSON.stringify(context.friends || [])} (netBalance > 0 means they owe user, < 0 means user owes them)
-            User's Groups & Balances: ${JSON.stringify(context.groups || [])} (myNetBalanceInGroup is the user's total stake)
-            Recent Activity: ${JSON.stringify(context.recentExpenses || [])}
-            Current Date: ${new Date().toLocaleDateString()}
-            Base Currency: USD
 
-            YOUR CAPABILITIES:
-            1. BALANCE CHECK: Answer questions like "What do I owe Suzz?" or "Who owes me money?". Use the provided balances.
-            2. ADD EXPENSE: Propose adding new expenses based on conversations. Identify description, amount, recipientType, recipientId, participants, splitMethod, and paidBy.
-            3. DELETE EXPENSE: Identify and propose deleting recent transactions.
-            4. ADVICE: Give witty, helpful financial tips based on spending.
+        // Build a concise friends reference so AI can use real IDs
+        const friendsRef = context.friends.map(f =>
+            `  - "${f.username}" (id: "${f.id}", balance: $${f.netBalance} USD; positive = they owe you, negative = you owe them)`
+        ).join('\n') || '  (no friends yet)';
 
-            ACTION PROTOCOL:
-            If adding an expense:
-            - type: "ADD_EXPENSE"
-            - Default paidBy to "${userId}" unless specified otherwise.
-            - If user says "Paid $20 for coffee with Suzz", default recipientId to Suzz's ID, participants: ["${userId}", Suzz's ID].
-            
-            CRITICAL RULES:
-            - ALWAYS generate the [ACTION] block if the user's intent is clear.
-            - If a friend owes money (netBalance > 0), be encouraging. If user owes (netBalance < 0), be subtle.
-            - The CURRENT USER'S ID is: "${userId}"
+        const groupsRef = context.groups.map(g =>
+            `  - "${g.name}" (id: "${g.id}", your net: $${g.myNetBalanceInGroup} USD, members: ${g.members.map(m => `${m.username}(${m.id})`).join(', ')})`
+        ).join('\n') || '  (no groups yet)';
 
-            Response Format:
-            - Provide a brief helpful/witty text.
-            - Follow it IMMEDIATELY with the JSON action block: [ACTION]{...}[/ACTION].
+        const expensesRef = context.recentExpenses.map(e =>
+            `  - id:"${e.id}" | "${e.description}" $${e.amount} on ${new Date(e.date).toLocaleDateString()} | paid by: ${e.paidBy} | context: ${e.group}`
+        ).join('\n') || '  (no recent expenses)';
 
-            User Message: "${message}"
-        `;
+        const prompt = `You are "Paywise AI", a smart financial assistant for the Paywise expense-splitting app.
+
+CURRENT USER: ${context.user.username} (id: "${userId}")
+
+FRIENDS & BALANCES:
+${friendsRef}
+
+GROUPS & BALANCES:
+${groupsRef}
+
+RECENT EXPENSES (last 10):
+${expensesRef}
+
+TODAY: ${new Date().toLocaleDateString()}
+
+== YOUR CAPABILITIES ==
+You can understand natural language and perform these actions:
+
+1. ADD_EXPENSE (friend expense): "I paid $50 for dinner with John"
+2. GROUP_EXPENSE: "Add $100 for hotel in Trip group"  
+3. DELETE_EXPENSE: "Delete my last expense" or "Remove the $50 dinner"
+4. SETTLE_UP: "Settle up with John" or "Mark John as paid"
+5. INFO_ONLY: Balance questions, advice, spending analysis — no action needed
+
+== STRICT RESPONSE FORMAT ==
+
+Always respond with:
+1. A short, friendly message (1-3 sentences max)
+2. If action needed, IMMEDIATELY follow with the JSON action block
+
+For ADD_EXPENSE (1:1 friend expense):
+[ACTION]
+{
+  "type": "ADD_EXPENSE",
+  "description": "Dinner at restaurant",
+  "amount": 50,
+  "currency": "USD",
+  "paidById": "${userId}",
+  "friendId": "<use exact id from FRIENDS list above>",
+  "splitMethod": "equally",
+  "splits": [
+    { "userId": "${userId}", "amount": 25 },
+    { "userId": "<friendId>", "amount": 25 }
+  ]
+}
+[/ACTION]
+
+For GROUP_EXPENSE:
+[ACTION]
+{
+  "type": "GROUP_EXPENSE",
+  "description": "Hotel booking",
+  "amount": 100,
+  "currency": "USD",
+  "paidById": "${userId}",
+  "groupId": "<use exact id from GROUPS list above>",
+  "splits": [
+    { "userId": "<memberId>", "amount": <share> }
+  ]
+}
+[/ACTION]
+
+For DELETE_EXPENSE:
+[ACTION]
+{
+  "type": "DELETE_EXPENSE",
+  "expenseId": "<use exact id from RECENT EXPENSES list>",
+  "description": "<expense description>",
+  "amount": <amount>
+}
+[/ACTION]
+
+For SETTLE_UP:
+[ACTION]
+{
+  "type": "SETTLE_UP",
+  "friendId": "<use exact id from FRIENDS list>",
+  "friendName": "<friend username>",
+  "amount": <balance amount as positive number>,
+  "payerId": "<who is paying — current user or friend id>"
+}
+[/ACTION]
+
+For INFO_ONLY (no action):
+[ACTION]
+{
+  "type": "INFO_ONLY"
+}
+[/ACTION]
+
+== RULES ==
+- ALWAYS include an [ACTION] block — even for info-only responses.
+- Use REAL IDs from the data above. Never use placeholder IDs.
+- For ADD_EXPENSE, split equally between paidById and friendId unless user specifies otherwise.
+- If amount is not clear, ask the user.
+- If friend/group name is ambiguous, ask which one.
+- Keep text response short — max 2-3 sentences. Be friendly and witty.
+- Do NOT add expense twice or confirm twice.
+
+USER MESSAGE: "${message}"`;
 
         const modelsToTry = [
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
+            "gemini-2.5-flash-preview-04-17",
             "gemini-2.0-flash",
-            "gemini-flash-latest",
-            "gemini-pro-latest"
+            "gemini-1.5-flash",
+            "gemini-pro"
         ];
         let result;
         let lastErr;
@@ -195,7 +274,7 @@ router.post('/chat', auth, async (req, res) => {
                 const model = genAI.getGenerativeModel({ model: modelName });
                 const response = await Promise.race([
                     model.generateContent(prompt),
-                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 20000))
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 25000))
                 ]);
                 
                 if (response && response.response) {
@@ -212,6 +291,21 @@ router.post('/chat', auth, async (req, res) => {
 
         const responseText = result.response.text();
 
+        // Parse the action block
+        const actionMatch = responseText.match(/\[ACTION\]([\s\S]*?)\[\/ACTION\]/);
+        let actionData = null;
+        if (actionMatch) {
+            try {
+                // Strip markdown code fences if present
+                const raw = actionMatch[1].replace(/```json|```/g, '').trim();
+                actionData = JSON.parse(raw);
+            } catch (e) {
+                console.warn('[AI] Failed to parse action JSON:', e.message);
+            }
+        }
+
+        const cleanedReply = responseText.replace(/\[ACTION\][\s\S]*?\[\/ACTION\]/, '').trim() || "Done!";
+
         // Analytics Tracking (Safe)
         try {
             const trackMetric = require('../utils/analyticsTracker');
@@ -223,11 +317,12 @@ router.post('/chat', auth, async (req, res) => {
             }
         } catch (e) {}
 
-        res.json({ reply: responseText });
+        res.json({ reply: cleanedReply, action: actionData });
     } catch (err) {
         console.error('AI Processing Error:', err.message);
         res.json({ 
-            reply: "My brain is taking a quick power nap! (AI service is currently saturated). ⚡\n\nI couldn't process that request right now, but you can try again in a few seconds." 
+            reply: "My brain is taking a quick power nap! ⚡ Please try again in a few seconds.",
+            action: null
         });
     }
 });

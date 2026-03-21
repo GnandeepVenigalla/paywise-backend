@@ -442,4 +442,58 @@ router.put('/release/bugs/:id/resolve', auth, isAdmin, checkPerms(['root', 'supe
     }
 });
 
+const Notification = require('../models/Notification');
+
+// ==========================================
+// NOTIFICATIONS API
+// ==========================================
+
+// Get all recent notifications for admin
+router.get('/notifications', auth, isAdmin, async (req, res) => {
+  try {
+    const role = req.adminRole;
+    const query = {};
+    
+    // Support targetRole if the notification is only meant for super_admin
+    if (role !== 'root' && role !== 'super_admin') {
+      query.$or = [
+        { targetRole: 'all' },
+        { targetRole: role }
+      ];
+    }
+
+    const unreadCount = await Notification.countDocuments({ ...query, isRead: false });
+    const notifications = await Notification.find(query).sort({ createdAt: -1 }).limit(50);
+    
+    res.json({ unreadCount, notifications });
+  } catch (err) {
+    console.error("Error fetching admin notifications:", err);
+    res.status(500).json({ msg: 'Server error fetching notifications' });
+  }
+});
+
+// Mark a specific notification as read
+router.put('/notifications/:id/read', auth, isAdmin, async (req, res) => {
+  try {
+    const notification = await Notification.findByIdAndUpdate(
+      req.params.id,
+      { isRead: true },
+      { new: true }
+    );
+    res.json(notification);
+  } catch (err) {
+    res.status(500).json({ msg: 'Error updating notification status' });
+  }
+});
+
+// Mark all as read
+router.put('/notifications/read-all', auth, isAdmin, async (req, res) => {
+  try {
+    await Notification.updateMany({ isRead: false }, { isRead: true });
+    res.json({ msg: 'All notifications marked as read' });
+  } catch (err) {
+    res.status(500).json({ msg: 'Error updating notifications' });
+  }
+});
+
 module.exports = router;
