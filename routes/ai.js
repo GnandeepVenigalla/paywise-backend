@@ -321,7 +321,7 @@ USER MESSAGE: "${message}"`;
     } catch (err) {
         console.error('AI Processing Error:', err.message);
         res.json({ 
-            reply: "My brain is taking a quick power nap! ⚡ Please try again in a few seconds.",
+            reply: "My brain is taking a quick power nap! ⚡ " + err.message,
             action: null
         });
     }

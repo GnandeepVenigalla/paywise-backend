@@ -151,7 +151,14 @@ router.post('/:id/members', auth, async (req, res) => {
 
         if (!group) return res.status(404).json({ msg: 'Group not found' });
 
-        const query = email ? { email } : { phone };
+        let query;
+        if (email) {
+            query = { email };
+        } else {
+            const rawPhone = phone.replace(/\D/g, '');
+            const phoneRegexStr = rawPhone.length > 0 ? rawPhone.split('').join('\\D*') : '^$';
+            query = { phone: new RegExp(phoneRegexStr, 'i') };
+        }
         const user = await User.findOne(query);
 
         // Fetch the current user to check block list
@@ -264,6 +271,54 @@ router.post('/:id/leave', auth, async (req, res) => {
 
         await group.save();
         res.json({ msg: 'Successfully left the group', group });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   POST api/groups/:id/remove/:userId
+// @desc    Remove an active member from a group (can be done by anyone in the group)
+router.post('/:id/remove/:userId', auth, async (req, res) => {
+    try {
+        const group = await Group.findById(req.params.id);
+        if (!group) return res.status(404).json({ msg: 'Group not found' });
+
+        if (!group.members.includes(req.user.id)) {
+            return res.status(400).json({ msg: 'You are not an active member of this group' });
+        }
+
+        const targetUserId = req.params.userId;
+        if (!group.members.includes(targetUserId)) {
+            return res.status(400).json({ msg: 'User is not an active member' });
+        }
+
+        const expenses = await Expense.find({ group: req.params.id });
+        let userBalance = 0;
+
+        const { convertAmount } = require('../utils/currency');
+        expenses.forEach(exp => {
+            const sourceCurr = exp.currency || 'USD';
+            if (exp.paidBy.toString() === targetUserId) {
+                userBalance += convertAmount(exp.amount, sourceCurr, 'USD');
+            }
+            exp.splits.forEach(split => {
+                if (split.user.toString() === targetUserId) {
+                    userBalance -= convertAmount(split.amount, sourceCurr, 'USD');
+                }
+            });
+        });
+
+        group.members = group.members.filter(id => id.toString() !== targetUserId);
+
+        if (Math.abs(userBalance) > 0.01) {
+            if (!group.pastMembers.includes(targetUserId)) {
+                group.pastMembers.push(targetUserId);
+            }
+        }
+
+        await group.save();
+        res.json({ msg: 'Successfully removed member from group', group });
     } catch (err) {
         console.error(err.message);
         res.status(500).send('Server Error');

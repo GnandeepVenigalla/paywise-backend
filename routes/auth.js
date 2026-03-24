@@ -3,11 +3,189 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/User');
 const Report = require('../models/Report');
 const auth = require('../middleware/auth');
 const sendEmail = require('../utils/sendEmail');
 const logActivity = require('../utils/activityLogger');
+
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+// @route   POST api/auth/google
+// @desc    Sign in / sign up via Google OAuth (Google One Tap / OAuth button)
+router.post('/google', async (req, res) => {
+    const { credential } = req.body;
+    if (!credential) return res.status(400).json({ msg: 'Google credential required' });
+
+    try {
+        // Verify the ID token with Google
+        const ticket = await googleClient.verifyIdToken({
+            idToken: credential,
+            audience: process.env.GOOGLE_CLIENT_ID
+        });
+        const payload = ticket.getPayload();
+        const { sub: googleId, email, name, picture } = payload;
+
+        let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
+
+        if (user) {
+            // Link Google ID if not already linked (existing email account)
+            if (!user.googleId) {
+                user.googleId = googleId;
+                user.authProvider = 'google';
+                if (picture && !user.profilePic) user.profilePic = picture;
+                await user.save();
+            }
+
+            if (!user.isVerified) {
+                const otp = Math.floor(100000 + Math.random() * 900000).toString();
+                user.emailVerificationOtp = crypto.createHash('sha256').update(otp).digest('hex');
+                user.emailVerificationExpire = Date.now() + 10 * 60 * 1000;
+                await user.save();
+
+                const message = `Welcome to Paywise!\n\nYour verification code is: ${otp}\n\nThis code is valid for 10 minutes.`;
+                await sendEmail({ email: user.email, subject: 'Paywise Verification Code', message });
+
+                return res.json({ msg: 'Please verify your email address. A code was sent.', requireOtp: true, email: user.email });
+            }
+        } else {
+            // New user — auto-register via Google
+            // Detect their currency from IP
+            let defaultCurrency = 'USD';
+            try {
+                const { default: axios } = require('axios');
+                const loc = await axios.get('http://ip-api.com/json/?fields=currency', { timeout: 3000 });
+                if (loc.data?.currency?.length === 3) defaultCurrency = loc.data.currency.toUpperCase();
+            } catch (_) {}
+
+            // Generate a unique username from their Google name
+            let baseUsername = (name || email.split('@')[0]).replace(/[^a-zA-Z0-9_]/g, '').substring(0, 20);
+            let username = baseUsername;
+            let suffix = 1;
+            while (await User.findOne({ username })) {
+                username = `${baseUsername}${suffix++}`;
+            }
+
+            user = new User({
+                username,
+                email: email.toLowerCase(),
+                googleId,
+                authProvider: 'google',
+                profilePic: picture || null,
+                isVerified: false,
+                defaultCurrency,
+                password: crypto.randomBytes(32).toString('hex')  // random unusable password
+            });
+            const otp = Math.floor(100000 + Math.random() * 900000).toString();
+            user.emailVerificationOtp = crypto.createHash('sha256').update(otp).digest('hex');
+            user.emailVerificationExpire = Date.now() + 10 * 60 * 1000;
+            await user.save();
+
+            // Track analytics
+            try { const t = require('../utils/analyticsTracker'); await t('visits', 1); } catch(_) {}
+        }
+
+        // Issue JWT
+        const jwtPayload = { user: { id: user.id } };
+        const token = await new Promise((resolve, reject) => {
+            jwt.sign(jwtPayload, process.env.JWT_SECRET || 'secret', { expiresIn: 360000 }, (err, t) => {
+                if (err) reject(err); else resolve(t);
+            });
+        });
+
+        res.json({
+            token,
+            user: { id: user.id, username: user.username, email: user.email }
+        });
+    } catch (err) {
+        console.error('[Google Auth Error]', err.message);
+        res.status(401).json({ msg: 'Invalid Google credential. Please try again.' });
+    }
+});
+
+// @route   POST api/auth/google-token
+// @desc    Sign in / sign up with Google user info (implicit flow — frontend fetches from Google userinfo)
+router.post('/google-token', async (req, res) => {
+    const { googleId, email, name, picture } = req.body;
+    if (!googleId || !email) return res.status(400).json({ msg: 'Google user info required' });
+
+    try {
+        let user = await User.findOne({ $or: [{ googleId }, { email: email.toLowerCase() }] });
+
+        if (user) {
+            if (!user.googleId) {
+                user.googleId = googleId;
+                user.authProvider = 'google';
+                if (picture && !user.profilePic) user.profilePic = picture;
+                await user.save();
+            }
+            if (!user.isVerified) {
+                const crypto = require('crypto');
+                const sendEmail = require('../utils/sendEmail');
+                const otp = Math.floor(100000 + Math.random() * 900000).toString();
+                user.emailVerificationOtp = crypto.createHash('sha256').update(otp).digest('hex');
+                user.emailVerificationExpire = Date.now() + 10 * 60 * 1000;
+                await user.save();
+
+                const message = `Welcome to Paywise!\n\nYour verification code is: ${otp}\n\nThis code is valid for 10 minutes.`;
+                await sendEmail({ email: user.email, subject: 'Paywise Verification Code', message });
+
+                return res.json({ msg: 'Please verify your email address. A code was sent.', requireOtp: true, email: user.email });
+            }
+        } else {
+            // New user — auto-register
+            let defaultCurrency = 'USD';
+            try {
+                const { default: axios } = require('axios');
+                const loc = await axios.get('http://ip-api.com/json/?fields=currency', { timeout: 3000 });
+                if (loc.data?.currency?.length === 3) defaultCurrency = loc.data.currency.toUpperCase();
+            } catch (_) {}
+
+            const crypto = require('crypto');
+            let baseUsername = (name || email.split('@')[0]).replace(/[^a-zA-Z0-9_]/g, '').substring(0, 20);
+            let username = baseUsername;
+            let suffix = 1;
+            while (await User.findOne({ username })) {
+                username = `${baseUsername}${suffix++}`;
+            }
+
+            user = new User({
+                username,
+                email: email.toLowerCase(),
+                googleId,
+                authProvider: 'google',
+                profilePic: picture || null,
+                isVerified: false,
+                defaultCurrency,
+                password: crypto.randomBytes(32).toString('hex')
+            });
+            const otp = Math.floor(100000 + Math.random() * 900000).toString();
+            user.emailVerificationOtp = crypto.createHash('sha256').update(otp).digest('hex');
+            user.emailVerificationExpire = Date.now() + 10 * 60 * 1000;
+            await user.save();
+            try { const t = require('../utils/analyticsTracker'); await t('visits', 1); } catch(_) {}
+
+            const sendEmail = require('../utils/sendEmail');
+            const message = `Welcome to Paywise!\n\nYour verification code is: ${otp}\n\nThis code is valid for 10 minutes.`;
+            await sendEmail({ email: user.email, subject: 'Paywise Verification Code', message });
+
+            return res.json({ msg: 'Verification code sent to email', requireOtp: true, email: user.email });
+        }
+
+        const jwtPayload = { user: { id: user.id } };
+        const token = await new Promise((resolve, reject) => {
+            jwt.sign(jwtPayload, process.env.JWT_SECRET || 'secret', { expiresIn: 360000 }, (err, t) => {
+                if (err) reject(err); else resolve(t);
+            });
+        });
+
+        res.json({ token, user: { id: user.id, username: user.username, email: user.email } });
+    } catch (err) {
+        console.error('[Google Token Auth Error]', err.message);
+        res.status(500).json({ msg: 'Failed to sign in with Google. Please try again.' });
+    }
+});
 
 // @route   POST api/auth/register
 // @desc    Register user (promotes ghost accounts from Splitwise migration)
@@ -75,6 +253,11 @@ router.post('/login', async (req, res) => {
         let user = await User.findOne({ email });
         if (!user) {
             return res.status(400).json({ msg: 'Invalid Credentials' });
+        }
+
+        // Guard: Google-only accounts don't have a usable password
+        if (user.authProvider === 'google' && !user.password) {
+            return res.status(400).json({ msg: 'This account uses Google Sign-In. Please use the "Continue with Google" button.' });
         }
 
         const isMatch = await bcrypt.compare(password, user.password);
@@ -251,12 +434,21 @@ router.get('/users', auth, async (req, res) => {
         if (!query) {
             return res.json([]);
         }
+        const safeQuery = query.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
+        const queryRegex = new RegExp(safeQuery, 'i');
+
+        const rawPhone = query.replace(/\D/g, '');
+        const phoneRegexStr = rawPhone.length > 0 ? rawPhone.split('').join('\\D*') : '^$';
+        const phoneRegex = new RegExp(phoneRegexStr, 'i');
+
         const users = await User.find({
             $or: [
-                { email: query },
-                { phone: query }
+                { email: queryRegex },
+                { username: queryRegex },
+                { phone: queryRegex },
+                { phone: phoneRegex }
             ]
-        }).select('-password');
+        }).select('-password').limit(10);
         res.json(users);
     } catch (err) {
         console.error(err.message);
@@ -273,12 +465,30 @@ router.post('/users/bulk', auth, async (req, res) => {
             return res.json([]);
         }
 
-        const users = await User.find({
-            $or: [
-                { email: { $in: contacts } },
-                { phone: { $in: contacts } }
-            ]
-        }).select('-password');
+        const emails = contacts.filter(c => c.includes('@'));
+        const phones = contacts.filter(c => !c.includes('@'));
+
+        const orConditions = [];
+        if (emails.length > 0) {
+            orConditions.push({ email: { $in: emails } });
+        }
+        
+        if (phones.length > 0) {
+            const phoneRegexArray = phones.map(p => {
+                const rawPhone = p.replace(/\D/g, '');
+                if (rawPhone.length < 5) return null;
+                return new RegExp(rawPhone.split('').join('\\D*'), 'i');
+            }).filter(Boolean);
+            
+            if (phoneRegexArray.length > 0) {
+                // If the array is too large, this query might get heavy, but for typical contact imports it's fine
+                orConditions.push({ phone: { $in: phoneRegexArray } });
+            }
+        }
+
+        if (orConditions.length === 0) return res.json([]);
+
+        const users = await User.find({ $or: orConditions }).select('-password');
         res.json(users);
     } catch (err) {
         console.error(err.message);
