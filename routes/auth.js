@@ -796,16 +796,29 @@ router.put('/preferences', auth, async (req, res) => {
 });
 
 // @route   PUT api/auth/app-settings
-// @desc    Save all app settings (split method, budget, theme, etc.)
+// @desc    Save all app settings (split method, budget, theme, customTheme, etc.)
 router.put('/app-settings', auth, async (req, res) => {
     try {
         const user = await User.findById(req.user.id);
         if (!user) return res.status(404).json({ msg: 'User not found' });
 
-        user.appSettings = {
-            ...user.appSettings,
-            ...req.body,
-        };
+        const { customTheme, ...flatSettings } = req.body;
+
+        // Merge flat settings (theme, language, etc.)
+        Object.assign(user.appSettings, flatSettings);
+
+        // Deep-merge customTheme if provided
+        if (customTheme && typeof customTheme === 'object') {
+            user.appSettings.customTheme = {
+                ...((user.appSettings.customTheme || {}).toObject
+                    ? user.appSettings.customTheme.toObject()
+                    : user.appSettings.customTheme || {}),
+                ...customTheme,
+            };
+        }
+
+        // Mark sub-document as modified so Mongoose picks up the changes
+        user.markModified('appSettings');
 
         await user.save();
         res.json(user.appSettings);

@@ -95,6 +95,15 @@ const UserSchema = new mongoose.Schema({
         // Security
         biometricLock: { type: Boolean, default: false },
         biometricCredentialId: { type: String },
+        // Custom Theme
+        customTheme: {
+            useCustomAccent: { type: Boolean, default: false },
+            accentColor: { type: String, default: '#059669' },
+            customAccentHex: { type: String, default: null },
+            surfaceStyle: { type: String, default: 'default' }, // 'default' | 'glass' | 'flat' | 'bordered'
+            borderRadius: { type: String, default: 'round' },   // 'sharp' | 'soft' | 'round' | 'pill'
+            fontScale: { type: Number, default: 1.0 },
+        },
     },
     splitwiseToken: { type: String },
     splitwiseMigrationStatus: {

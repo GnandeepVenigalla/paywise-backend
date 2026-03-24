@@ -23,6 +23,7 @@ const uploadRoutes = require('./routes/upload');
 const adminRoutes = require('./routes/admin');
 const aiRoutes = require('./routes/ai');
 const analyticsRoutes = require('./routes/analytics');
+const supportRoutes = require('./routes/support');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/groups', groupRoutes);
@@ -32,6 +33,7 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/support', supportRoutes);
 
 // Schedulers
 const startSettleUpScheduler = require('./utils/settleUpScheduler');
@@ -49,6 +51,9 @@ mongoose.connect(MONGO_URI).then(() => {
         // Start the daily friend loan interest scheduler
         const startInterestScheduler = require('./utils/interestScheduler');
         startInterestScheduler();
+        // Start the support ticket 7-day cleanup protocol
+        const startSupportCleanup = require('./utils/supportCleanup');
+        startSupportCleanup();
         // Fetch live exchange rates and schedule 12-hour refresh cycle
         updateRates();
         setInterval(updateRates, 1000 * 60 * 60 * 12);

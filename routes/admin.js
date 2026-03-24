@@ -496,4 +496,52 @@ router.put('/notifications/read-all', auth, isAdmin, async (req, res) => {
   }
 });
 
+// Support Tickets Admin API
+const Support = require('../models/Support');
+
+router.get('/support', auth, isAdmin, async (req, res) => {
+    try {
+        const tickets = await Support.find().populate('user', 'username email').sort({ createdAt: -1 });
+        res.json(tickets);
+    } catch (err) {
+        res.status(500).send('Server Error');
+    }
+});
+
+router.put('/support/:id', auth, isAdmin, async (req, res) => {
+    try {
+        const { status, adminResponse } = req.body;
+        const updateData = { status, adminResponse };
+
+        // Record exact closure time for auto-cleanup protocol (1 week cycle)
+        if (status === 'closed') {
+            updateData.closedAt = new Date();
+        } else {
+            updateData.closedAt = null; // Reset if reopened
+        }
+
+        // If there's a response, also push it to the unified chat thread
+        if (adminResponse) {
+            updateData.$push = {
+                replies: {
+                    sender: req.user.id,
+                    message: adminResponse,
+                    isAdmin: true,
+                    createdAt: new Date()
+                }
+            };
+        }
+
+        const ticket = await Support.findByIdAndUpdate(
+            req.params.id, 
+            updateData, 
+            { new: true }
+        );
+        res.json(ticket);
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Server Error');
+    }
+});
+
 module.exports = router;
