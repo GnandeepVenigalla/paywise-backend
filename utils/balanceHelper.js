@@ -32,7 +32,8 @@ async function calculateBalanceWithFriend(userId, friendId) {
         }
     });
 
-    return balance;
+    // Round to 2 decimal places to eliminate floating-point dust
+    return Math.round(balance * 100) / 100;
 }
 
 module.exports = { calculateBalanceWithFriend };

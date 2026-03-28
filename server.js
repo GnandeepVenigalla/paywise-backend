@@ -24,6 +24,8 @@ const adminRoutes = require('./routes/admin');
 const aiRoutes = require('./routes/ai');
 const analyticsRoutes = require('./routes/analytics');
 const supportRoutes = require('./routes/support');
+const merchantRoutes = require('./routes/merchant');
+const loanRoutes = require('./routes/loans');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/groups', groupRoutes);
@@ -34,6 +36,8 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/support', supportRoutes);
+app.use('/api/merchant', merchantRoutes);
+app.use('/api/loans', loanRoutes);
 
 // Schedulers
 const startSettleUpScheduler = require('./utils/settleUpScheduler');

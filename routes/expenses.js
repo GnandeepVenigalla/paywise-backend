@@ -4,6 +4,7 @@ const Expense = require('../models/Expense');
 const auth = require('../middleware/auth');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const logActivity = require('../utils/activityLogger');
+const { notifyExpenseAction } = require('../utils/expenseNotifier');
 
 // @route   POST api/expenses
 // @desc    Add an expense
@@ -53,7 +54,59 @@ router.post('/', auth, async (req, res) => {
             status: 'success'
         });
 
-        res.json(expense);
+        // ── Email notifications (non-blocking) ──────────────────────────
+        const isSettleUp = description?.toLowerCase().includes('settle up') ||
+            description?.toLowerCase().startsWith('partial cash payment') ||
+            description?.toLowerCase().startsWith('cash settle up');
+        notifyExpenseAction({
+            actionType: isSettleUp ? 'settled' : 'added',
+            expense,
+            actorId: req.user.id,
+            groupId: group || null,
+        });
+        // ────────────────────────────────────────────────────────────────
+
+        // ── Auto-create LoanRequest for loan expenses ────────────────────
+        let loanRequest = null;
+        if (isLoan && loanInterestRate > 0 && !isSettleUp) {
+            try {
+                const LoanRequest = require('../models/LoanRequest');
+                const { convertAmount } = require('../utils/currency');
+
+                // Find the borrower (first split user that isn't the payer)
+                const lenderId = (paidBy || req.user.id).toString();
+                const borrowerSplit = (splits || []).find(s => {
+                    const uid = (s.user?._id || s.user).toString();
+                    return uid !== lenderId;
+                });
+
+                if (borrowerSplit) {
+                    const borrowerId = (borrowerSplit.user?._id || borrowerSplit.user).toString();
+                    const amountInUSD = convertAmount(amount, currency || 'USD', 'USD');
+                    const requiresPassword = amountInUSD > 100;
+
+                    // Remove old if exists (idempotent)
+                    await LoanRequest.deleteOne({ expense: expense._id });
+
+                    loanRequest = await new LoanRequest({
+                        expense: expense._id,
+                        lender: lenderId,
+                        borrower: borrowerId,
+                        amount,
+                        currency: currency || 'USD',
+                        interestRate: loanInterestRate,
+                        requiresPasswordConfirmation: requiresPassword,
+                    }).save();
+
+                    console.log(`[Expenses] LoanRequest created for expense ${expense._id}, borrower ${borrowerId}, requiresPassword: ${requiresPassword}`);
+                }
+            } catch (loanErr) {
+                console.error('[Expenses] Failed to create LoanRequest:', loanErr.message);
+            }
+        }
+        // ────────────────────────────────────────────────────────────────
+
+        res.json({ ...expense.toObject(), loanRequest });
     } catch (err) {
         console.error(err.message);
         res.status(500).send('Server Error');
@@ -120,6 +173,9 @@ router.get('/friends/:friendId', auth, async (req, res) => {
                 }
             }
         });
+
+        // Round to 2 decimal places to avoid floating-point dust showing as phantom debt
+        balance = Math.round(balance * 100) / 100;
 
         res.json({ friend, expenses, balance });
     } catch (err) {
@@ -214,7 +270,26 @@ router.delete('/:id', auth, async (req, res) => {
             return res.status(401).json({ msg: 'Only the person who uploaded this expense can delete it' });
         }
 
+        // Capture data before deleting for the notification
+        const deletedSnapshot = {
+            description: expense.description,
+            amount: expense.amount,
+            currency: expense.currency,
+            paidBy: expense.paidBy,
+            splits: expense.splits,
+        };
+        const deletedGroupId = expense.group || null;
+
         await expense.deleteOne();
+
+        // ── Email notifications (non-blocking) ──────────────────────────
+        notifyExpenseAction({
+            actionType: 'deleted',
+            expense: deletedSnapshot,
+            actorId: req.user.id,
+            groupId: deletedGroupId,
+        });
+        // ────────────────────────────────────────────────────────────────
 
         res.json({ msg: 'Expense removed' });
     } catch (err) {
@@ -280,6 +355,15 @@ router.put('/:id', auth, async (req, res) => {
             .populate('addedBy', 'username email')
             .populate('splits.user', 'username email')
             .populate('items.assignedTo', 'username email');
+
+        // ── Email notifications (non-blocking) ──────────────────────────
+        notifyExpenseAction({
+            actionType: 'edited',
+            expense: populatedExpense,
+            actorId: req.user.id,
+            groupId: populatedExpense.group || null,
+        });
+        // ────────────────────────────────────────────────────────────────
 
         res.json(populatedExpense);
     } catch (err) {
