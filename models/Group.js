@@ -33,7 +33,16 @@ const GroupSchema = new mongoose.Schema({
     image: {
         type: String,
         default: null
-    }
+    },
+    groupType: {
+        type: String,
+        enum: ['default', 'community'],
+        default: 'default'
+    },
+    paymentCycle: [{
+        user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        hasPaid: { type: Boolean, default: false }
+    }]
 }, { timestamps: true });
 
 module.exports = mongoose.model('Group', GroupSchema);

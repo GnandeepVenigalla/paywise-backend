@@ -11,7 +11,7 @@ const logActivity = require('../utils/activityLogger');
 // @desc    Create a group
 router.post('/', auth, async (req, res) => {
     try {
-        const { name } = req.body;
+        const { name, groupType } = req.body;
         const members = req.body.members || [];
         // Include the creator in members
         const allMembers = [...new Set([...members, req.user.id])];
@@ -19,14 +19,18 @@ router.post('/', auth, async (req, res) => {
         const newGroup = new Group({
             name,
             members: allMembers,
-            createdBy: req.user.id
+            createdBy: req.user.id,
+            groupType: groupType || 'default',
+            paymentCycle: groupType === 'community' 
+                ? allMembers.map(mId => ({ user: mId, hasPaid: false }))
+                : []
         });
 
         const group = await newGroup.save();
         
         await logActivity({
             user: req.user.id,
-            action: `New group initialized: "${name}"`,
+            action: `New ${groupType || 'default'} group initialized: "${name}"`,
             category: 'group',
             status: 'success'
         });
@@ -96,7 +100,9 @@ router.get('/', auth, async (req, res) => {
 // @desc    Get complete group details along with expenses and balances
 router.get('/:id', auth, async (req, res) => {
     try {
-        const group = await Group.findById(req.params.id).populate('members pastMembers', 'username email');
+        const group = await Group.findById(req.params.id)
+            .populate('members pastMembers', 'username email')
+            .populate('paymentCycle.user', 'username email');
         if (!group) return res.status(404).json({ msg: 'Group not found' });
 
         // Ensure user is part of group (active or past)
@@ -182,6 +188,9 @@ router.post('/:id/members', auth, async (req, res) => {
                 if (user) {
                     if (!group.members.includes(user._id)) {
                         group.members.push(user._id);
+                        if (group.groupType === 'community') {
+                            group.paymentCycle.push({ user: user._id, hasPaid: false });
+                        }
                         await group.save();
                     }
                     return res.json({ msg: 'Invitation email sent to ghost user!' });
@@ -198,6 +207,9 @@ router.post('/:id/members', auth, async (req, res) => {
             // Remove from pastMembers if re-joining
             group.pastMembers = group.pastMembers.filter(id => id.toString() !== user._id.toString());
             group.members.push(user._id);
+            if (group.groupType === 'community') {
+                group.paymentCycle.push({ user: user._id, hasPaid: false });
+            }
             await group.save();
         }
         res.json({ msg: 'User added to your group successfully!', group });
@@ -269,6 +281,11 @@ router.post('/:id/leave', auth, async (req, res) => {
             }
         }
 
+        // Remove from payment cycle if community
+        if (group.groupType === 'community') {
+            group.paymentCycle = group.paymentCycle.filter(item => item.user.toString() !== req.user.id);
+        }
+
         await group.save();
         res.json({ msg: 'Successfully left the group', group });
     } catch (err) {
@@ -317,6 +334,11 @@ router.post('/:id/remove/:userId', auth, async (req, res) => {
             }
         }
 
+        // Remove from payment cycle if community
+        if (group.groupType === 'community') {
+            group.paymentCycle = group.paymentCycle.filter(item => item.user.toString() !== targetUserId);
+        }
+
         await group.save();
         res.json({ msg: 'Successfully removed member from group', group });
     } catch (err) {
@@ -336,6 +358,9 @@ router.post('/:id/join', auth, async (req, res) => {
             // Remove from pastMembers if re-joining
             group.pastMembers = group.pastMembers.filter(id => id.toString() !== req.user.id.toString());
             group.members.push(req.user.id);
+            if (group.groupType === 'community') {
+                group.paymentCycle.push({ user: req.user.id, hasPaid: false });
+            }
             await group.save();
         }
         res.json({ msg: 'Joined group successfully!', group });

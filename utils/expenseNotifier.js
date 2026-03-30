@@ -18,6 +18,7 @@ function buildEmailHtml({ actionType, actorName, recipientName, description, amo
         edited:  { bg: '#fffbeb', accent: '#d97706', icon: '✏️',  label: 'Expense Updated' },
         deleted: { bg: '#fff1f2', accent: '#e11d48', icon: '🗑️', label: 'Expense Deleted' },
         settled: { bg: '#eff6ff', accent: '#2563eb', icon: '✅', label: 'Settled Up' },
+        community_turn: { bg: '#fff7ed', accent: '#ea580c', icon: '🔄', label: 'Turn Recorded' },
     };
     const { bg, accent, icon, label } = colorMap[actionType] || colorMap.added;
     const context = groupName ? `in group <strong>${groupName}</strong>` : 'between you two';
@@ -47,7 +48,7 @@ function buildEmailHtml({ actionType, actorName, recipientName, description, amo
         <tr><td style="padding:28px 32px;">
           <p style="margin:0 0 20px;font-size:16px;color:#374151;line-height:1.6;">
             Hi <strong>${recipientName}</strong>,<br>
-            <strong>${actorName}</strong> ${getActionVerb(actionType)} an expense ${context}.
+            <strong>${actorName}</strong> ${actionType === 'community_turn' ? 'just recorded a turn' : getActionVerb(actionType)} an expense ${context}.
           </p>
 
           <!-- Expense Card -->
@@ -74,6 +75,21 @@ function buildEmailHtml({ actionType, actorName, recipientName, description, amo
           <p style="margin:0 0 24px;font-size:14px;color:#374151;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px 16px;">
             🎉 Your balance ${context} has been updated. Open the app to see your new standing.
           </p>` : ''}
+
+          ${actionType === 'community_turn' ? `
+          <div style="margin:0 0 24px;font-size:14px;color:#374151;background:#fff7ed;border:1px solid #ffedd5;border-radius:12px;padding:16px;">
+            ${recipientName.includes('(Next)') ? `
+                <div style="display:flex;align-items:start;gap:12px;">
+                    <span style="font-size:24px;">🎯</span>
+                    <div>
+                        <strong style="color:#ea580c;font-size:16px;">You are next in line!</strong>
+                        <p style="margin:4px 0 0;color:#9a3412;">It's your turn to pick up the next bill. The group is counting on you! 🚀</p>
+                    </div>
+                </div>
+            ` : `
+                <p style="margin:0;color:#9a3412;">The rotation is moving! Check out who's next in the app to keep things fair.</p>
+            `}
+          </div>` : ''}
 
           <!-- CTA -->
           <div style="text-align:center;margin-bottom:8px;">
@@ -240,4 +256,56 @@ function buildSubject(actionType, actorName, description) {
     return labels[actionType] || `Paywise: expense update — "${truncated}"`;
 }
 
-module.exports = { notifyExpenseAction };
+/**
+ * Specialized notifier for community groups to announce turns and identify the "next" person.
+ */
+async function notifyCommunityUpdate({ group, actorId, expenseDescription }) {
+    try {
+        const Group = require('../models/Group');
+        const targetGroup = await Group.findById(group).populate('members', 'username email notificationSettings');
+        if (!targetGroup) return;
+
+        const actor = await User.findById(actorId).select('username');
+        const actorName = actor?.username || 'Someone';
+
+        // Find the "Next" person in the rotation (first hasPaid: false)
+        const nextInLineMemberId = targetGroup.paymentCycle?.find(c => !c.hasPaid)?.user?.toString();
+
+        const emailPromises = targetGroup.members.map(member => {
+            if (member._id.toString() === actorId.toString()) return null;
+            if (member.notificationSettings?.expenseAdded === false) return null;
+
+            const isNextInLine = member._id.toString() === nextInLineMemberId;
+            const recipientName = isNextInLine ? `${member.username} (Next)` : member.username;
+
+            const subject = isNextInLine 
+                ? `🎯 It's your turn in ${targetGroup.name}!` 
+                : `🔄 ${actorName} recorded a turn in ${targetGroup.name}`;
+
+            const html = buildEmailHtml({
+                actionType: 'community_turn',
+                actorName,
+                recipientName,
+                description: expenseDescription,
+                amount: 0,
+                currency: targetGroup.currency || 'USD',
+                groupName: targetGroup.name,
+            });
+
+            const text = `${member.username},\n\n${actorName} just recorded a turn in ${targetGroup.name}: "${expenseDescription}".\n\n${isNextInLine ? "🎯 YOU ARE NEXT! It is your turn to pay the next bill." : "The rotation has moved. Open the app to see who is next!"}\n\nhttps://paywiseapp.com`;
+
+            return sendEmail({
+                email: member.email,
+                subject,
+                message: text,
+                html
+            }).catch(e => console.error(`[CommunityNotifier] Error sending to ${member.email}:`, e.message));
+        });
+
+        await Promise.allSettled(emailPromises);
+    } catch (err) {
+        console.error('[CommunityNotifier] Error:', err.message);
+    }
+}
+
+module.exports = { notifyExpenseAction, notifyCommunityUpdate };

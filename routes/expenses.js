@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const Expense = require('../models/Expense');
+const Group = require('../models/Group');
+const User = require('../models/User');
 const auth = require('../middleware/auth');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const logActivity = require('../utils/activityLogger');
-const { notifyExpenseAction } = require('../utils/expenseNotifier');
+const { notifyExpenseAction, notifyCommunityUpdate } = require('../utils/expenseNotifier');
 
 // @route   POST api/expenses
 // @desc    Add an expense
@@ -105,6 +107,68 @@ router.post('/', auth, async (req, res) => {
             }
         }
         // ────────────────────────────────────────────────────────────────
+
+        // ── Community Group Cycle Logic ──────────────────────────────────
+        if (group) {
+            try {
+                const targetGroup = await Group.findById(group);
+                if (targetGroup && targetGroup.groupType === 'community') {
+                    const payerId = (paidBy || req.user.id).toString();
+                    
+                    // Mark payer as having paid in the current cycle
+                    let memberFound = false;
+                    const updatedCycle = targetGroup.paymentCycle.map(item => {
+                        const itemId = item.user?._id?.toString() || item.user?.toString();
+                        if (itemId === payerId) {
+                            memberFound = true;
+                            return { user: itemId, hasPaid: true };
+                        }
+                        return { user: itemId, hasPaid: item.hasPaid };
+                    });
+
+                    // Update cycle on document
+                    targetGroup.paymentCycle = updatedCycle;
+
+                    // If payer wasn't in the cycle, add them (edge case)
+                    if (!memberFound) {
+                        targetGroup.paymentCycle.push({ user: payerId, hasPaid: true });
+                    }
+
+                    // Check if EVERY member in the current group has paid
+                    const activeCycleMemberIds = targetGroup.members.map(m => m.toString());
+                    const cycleStatuses = targetGroup.paymentCycle.filter(item => {
+                        const itemId = item.user?._id?.toString() || item.user?.toString();
+                        return activeCycleMemberIds.includes(itemId);
+                    });
+                    
+                    const allPaid = cycleStatuses.length > 0 && cycleStatuses.every(item => item.hasPaid);
+                    
+                    if (allPaid) {
+                        // Reset the cycle for all active members
+                        targetGroup.paymentCycle = targetGroup.paymentCycle.map(item => {
+                            const itemId = item.user?._id?.toString() || item.user?.toString();
+                            if (activeCycleMemberIds.includes(itemId)) {
+                                return { user: itemId, hasPaid: false };
+                            }
+                            return item;
+                        });
+                    }
+
+                    await targetGroup.save();
+
+                    // ─── Trigger Community Notifications ───────────────────
+                    notifyCommunityUpdate({
+                        group: targetGroup._id,
+                        actorId: req.user.id,
+                        expenseDescription: description
+                    });
+                }
+            } catch (groupErr) {
+                // Don't crash the whole expense if cycle update fails, just log it.
+                console.error('[Expenses] Post-Save Cycle update error:', groupErr.message);
+            }
+        }
+        // ──────────────────────────────────────────────────────────────────
 
         res.json({ ...expense.toObject(), loanRequest });
     } catch (err) {
