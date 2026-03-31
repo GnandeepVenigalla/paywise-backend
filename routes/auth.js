@@ -86,6 +86,26 @@ router.post('/google', async (req, res) => {
             try { const t = require('../utils/analyticsTracker'); await t('visits', 1); } catch(_) {}
         }
 
+        // Check if phone number is missing (for Google users)
+        if (!user.phone) {
+            const { createNotification } = require('../utils/notificationService');
+            // Try to avoid spamming by checking if a similar notification was sent recently? 
+            // For now, per user request, we send it.
+            createNotification({
+                recipientId: user.id,
+                title: 'Phone Number Required',
+                message: 'Please update your phone number in Account Settings to enable full security and friend features.',
+                category: 'system',
+                actionUrl: '/account'
+            }).catch(e => console.error('Phone notification error:', e.message));
+
+            sendEmail({
+                email: user.email,
+                subject: 'Action Required: Update your Paywise phone number',
+                message: `Hi ${user.username},\n\nWelcome to Paywise! We noticed your account is missing a phone number.\n\nAdding a phone number helps your friends find you easily and keeps your account secure.\n\nPlease update it here: ${process.env.FRONTEND_URL || 'https://www.paywiseapp.com/#/account'}\n\nHappy splitting!`
+            }).catch(e => console.error('Phone email error:', e.message));
+        }
+
         // Issue JWT
         const jwtPayload = { user: { id: user.id } };
         const token = await new Promise((resolve, reject) => {
@@ -171,6 +191,24 @@ router.post('/google-token', async (req, res) => {
             await sendEmail({ email: user.email, subject: 'Paywise Verification Code', message });
 
             return res.json({ msg: 'Verification code sent to email', requireOtp: true, email: user.email });
+        }
+
+        // Check if phone number is missing
+        if (!user.phone) {
+            const { createNotification } = require('../utils/notificationService');
+            createNotification({
+                recipientId: user.id,
+                title: 'Phone Number Required',
+                message: 'Please update your phone number in Account Settings to enable full security and friend features.',
+                category: 'system',
+                actionUrl: '/account'
+            }).catch(e => console.error('Phone notification error:', e.message));
+
+            require('../utils/sendEmail')({
+                email: user.email,
+                subject: 'Action Required: Update your Paywise phone number',
+                message: `Hi ${user.username},\n\nWe noticed your account is missing a phone number.\n\nAdding a phone number helps your friends find you easily and keeps your account secure.\n\nPlease update it here: ${process.env.FRONTEND_URL || 'https://www.paywiseapp.com/#/account'}\n\nHappy splitting!`
+            }).catch(e => console.error('Phone email error:', e.message));
         }
 
         const jwtPayload = { user: { id: user.id } };
@@ -277,6 +315,23 @@ router.post('/login', async (req, res) => {
             return res.status(403).json({ msg: 'Please verify your email address. A new code was sent.', requireOtp: true, email: user.email });
         }
 
+        if (!user.phone) {
+            const { createNotification } = require('../utils/notificationService');
+            createNotification({
+                recipientId: user.id,
+                title: 'Phone Number Required',
+                message: 'Please update your phone number in Account Settings to help friends find you and keep your account secure.',
+                category: 'system',
+                actionUrl: '/account'
+            }).catch(e => console.error('Phone notification error:', e.message));
+
+            sendEmail({
+                email: user.email,
+                subject: 'Action Required: Update your Paywise phone number',
+                message: `Hi ${user.username},\n\nWe noticed your account is missing a phone number.\n\nAdding a phone number helps your friends find you easily and keeps your account secure.\n\nPlease update it here: ${process.env.FRONTEND_URL || 'https://www.paywiseapp.com/#/account'}\n\nHappy splitting!`
+            }).catch(e => console.error('Phone email error:', e.message));
+        }
+
         const payload = { user: { id: user.id } };
         jwt.sign(payload, process.env.JWT_SECRET || 'secret', { expiresIn: 360000 }, (err, token) => {
             if (err) throw err;
@@ -369,6 +424,23 @@ router.post('/verify-otp', async (req, res) => {
             status: 'success'
         });
 
+        if (!user.phone) {
+            const { createNotification } = require('../utils/notificationService');
+            createNotification({
+                recipientId: user.id,
+                title: 'Phone Number Required',
+                message: 'Please update your phone number in Account Settings to help friends find you and keep your account secure.',
+                category: 'system',
+                actionUrl: '/account'
+            }).catch(e => console.error('Phone notification error:', e.message));
+
+            sendEmail({
+                email: user.email,
+                subject: 'Action Required: Update your Paywise phone number',
+                message: `Hi ${user.username},\n\nWe noticed your account is missing a phone number.\n\nAdding a phone number helps your friends find you easily and keeps your account secure.\n\nPlease update it here: ${process.env.FRONTEND_URL || 'https://www.paywiseapp.com/#/account'}\n\nHappy splitting!`
+            }).catch(e => console.error('Phone email error:', e.message));
+        }
+
         const payload = { user: { id: user.id } };
         jwt.sign(payload, process.env.JWT_SECRET || 'secret', { expiresIn: 360000 }, (err, token) => {
             if (err) throw err;
@@ -446,7 +518,8 @@ router.get('/users', auth, async (req, res) => {
                 { email: queryRegex },
                 { username: queryRegex },
                 { phone: queryRegex },
-                { phone: phoneRegex }
+                { phone: phoneRegex },
+                ...(rawPhone.length >= 10 ? [{ phone: new RegExp(rawPhone.slice(-10).split('').join('\\D*'), 'i') }] : [])
             ]
         }).select('-password').limit(10);
         res.json(users);
@@ -474,16 +547,19 @@ router.post('/users/bulk', auth, async (req, res) => {
         }
         
         if (phones.length > 0) {
-            const phoneRegexArray = phones.map(p => {
+            phones.forEach(p => {
                 const rawPhone = p.replace(/\D/g, '');
-                if (rawPhone.length < 5) return null;
-                return new RegExp(rawPhone.split('').join('\\D*'), 'i');
-            }).filter(Boolean);
-            
-            if (phoneRegexArray.length > 0) {
-                // If the array is too large, this query might get heavy, but for typical contact imports it's fine
-                orConditions.push({ phone: { $in: phoneRegexArray } });
-            }
+                if (rawPhone.length >= 5) {
+                    const r = new RegExp(rawPhone.split('').join('\\D*'), 'i');
+                    orConditions.push({ phone: r });
+                    
+                    // Also try matching the last 10 digits as a fallback
+                    if (rawPhone.length >= 10) {
+                        const last10 = rawPhone.slice(-10);
+                        orConditions.push({ phone: new RegExp(last10.split('').join('\\D*'), 'i') });
+                    }
+                }
+            });
         }
 
         if (orConditions.length === 0) return res.json([]);
@@ -689,6 +765,18 @@ router.post('/friends', auth, async (req, res) => {
 
         await user.save();
         await friend.save();
+
+        // In-app notification for the newly added friend
+        const { createNotification } = require('../utils/notificationService');
+        await createNotification({
+            recipientId: friendId,
+            title: `👋 New friend: ${user.username}`,
+            message: `${user.username} added you as a friend on Paywise.`,
+            category: 'friend',
+            type: 'success',
+            actionUrl: `/friends/${user._id.toString()}`,
+            metadata: { friendId: user._id.toString() }
+        });
 
         res.json({ msg: 'Friend added successfully' });
     } catch (err) {

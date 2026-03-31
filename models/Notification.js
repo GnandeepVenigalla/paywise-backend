@@ -1,6 +1,11 @@
 const mongoose = require('mongoose');
 
 const notificationSchema = new mongoose.Schema({
+  recipient: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null // null means system-wide or role-based
+  },
   title: {
     type: String,
     required: true
@@ -15,7 +20,7 @@ const notificationSchema = new mongoose.Schema({
     default: 'info'
   },
   category: {
-    type: String, // e.g., 'system_health', 'user_report', 'kyc', 'billing', 'security'
+    type: String, // e.g., 'expense', 'loan', 'friend', 'system'
     default: 'system'
   },
   isRead: {
@@ -23,15 +28,15 @@ const notificationSchema = new mongoose.Schema({
     default: false
   },
   targetRole: {
-    type: String, // e.g., 'root', 'admin', 'all'
-    default: 'all'
+    type: String,
+    default: null
   },
   actionUrl: {
-    type: String, // optional deep link when admin clicks the notification
+    type: String,
     default: null
   },
   metadata: {
-    type: mongoose.Schema.Types.Mixed, // flexible data
+    type: mongoose.Schema.Types.Mixed,
     default: {}
   }
 }, { timestamps: true });

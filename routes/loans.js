@@ -11,10 +11,15 @@ const sendEmail = require('../utils/sendEmail');
 
 const SMALL_LIMIT = LoanRequest.SMALL_LOAN_LIMIT_USD;
 
+const CURRENCY_SYMBOLS = {
+    USD: '$', EUR: '€', GBP: '£', INR: '₹', CAD: 'CA$', AUD: 'A$', JPY: '¥', 
+    CNY: '¥', CHF: 'CHF', MXN: 'MX$', BRL: 'R$', SGD: 'S$', AED: 'AED'
+};
+const getSym = (code) => CURRENCY_SYMBOLS[code] || code || '$';
+
 // ─── Helper: build loan notification email ──────────────────────────────────
 async function sendLoanEmail({ toUser, fromUser, expense, action, loanRequest }) {
-    const sym = { USD: '$', EUR: '€', GBP: '£', INR: '₹', CAD: 'CA$', AUD: 'A$', JPY: '¥' };
-    const s = sym[expense.currency] || '$';
+    const s = getSym(expense.currency);
     const amt = `${s}${expense.amount.toFixed(2)}`;
     const appUrl = 'https://paywiseapp.com';
 
@@ -45,7 +50,6 @@ async function sendLoanEmail({ toUser, fromUser, expense, action, loanRequest })
 
 // ─── POST /api/loans ─────────────────────────────────────────────────────────
 // Create a loan request. Called automatically when an expense is saved with isLoan=true.
-// The expense's isLoan flag is LEFT AS TRUE in DB, but the scheduler ignores it until accepted.
 router.post('/', auth, async (req, res) => {
     try {
         const { expenseId } = req.body;
@@ -57,13 +61,11 @@ router.post('/', auth, async (req, res) => {
         if (!expense) return res.status(404).json({ msg: 'Expense not found' });
         if (!expense.isLoan) return res.status(400).json({ msg: 'Expense is not marked as a loan' });
 
-        // Lender is always whoever paid (paidBy)
         const lenderId = (expense.paidBy._id || expense.paidBy).toString();
         if (lenderId !== req.user.id) {
             return res.status(403).json({ msg: 'Only the lender can initiate a loan request' });
         }
 
-        // Find the borrower — first split user that isn't the lender
         const borrowerSplit = expense.splits.find(s => {
             const uid = (s.user._id || s.user).toString();
             return uid !== lenderId;
@@ -74,10 +76,8 @@ router.post('/', auth, async (req, res) => {
         const borrowerUser = await User.findById(borrowerId).select('username email');
         const lenderUser = expense.paidBy;
 
-        // Remove any existing pending request for this expense (idempotent)
         await LoanRequest.deleteOne({ expense: expenseId });
 
-        // Determine if password confirmation is needed (amount > $100 equivalent in USD)
         const amountInUSD = convertAmount(expense.amount, expense.currency || 'USD', 'USD');
         const requiresPassword = amountInUSD > SMALL_LIMIT;
 
@@ -92,16 +92,16 @@ router.post('/', auth, async (req, res) => {
         });
         await loanReq.save();
 
-        // Email the borrower
-        if (borrowerUser?.notificationSettings?.expenseAdded !== false) {
-            await sendLoanEmail({
-                toUser: borrowerUser,
-                fromUser: lenderUser,
-                expense,
-                action: 'requested',
-                loanRequest: loanReq,
-            });
-        }
+        const { createNotification } = require('../utils/notificationService');
+        await createNotification({
+            recipientId: borrowerId,
+            title: `💰 Loan request from ${lenderUser.username}`,
+            message: `${lenderUser.username} sent you a loan request for "${expense.description}" (${getSym(expense.currency)}${expense.amount}).`,
+            category: 'loan',
+            type: 'info',
+            actionUrl: `/friends/${lenderId}`,
+            metadata: { loanRequestId: loanReq._id, expenseId }
+        });
 
         res.json({ loanRequest: loanReq, requiresPassword });
     } catch (err) {
@@ -111,7 +111,6 @@ router.post('/', auth, async (req, res) => {
 });
 
 // ─── GET /api/loans/pending ──────────────────────────────────────────────────
-// Get all pending loan requests where the current user is the borrower
 router.get('/pending', auth, async (req, res) => {
     try {
         const pending = await LoanRequest.find({
@@ -130,7 +129,6 @@ router.get('/pending', auth, async (req, res) => {
 });
 
 // ─── GET /api/loans/sent ────────────────────────────────────────────────────
-// Get all loan requests sent by the current user (lender), grouped by status
 router.get('/sent', auth, async (req, res) => {
     try {
         const sent = await LoanRequest.find({ lender: req.user.id })
@@ -146,7 +144,6 @@ router.get('/sent', auth, async (req, res) => {
 });
 
 // ─── GET /api/loans/expense/:expenseId ──────────────────────────────────────
-// Get the loan request for a specific expense
 router.get('/expense/:expenseId', auth, async (req, res) => {
     try {
         const loanReq = await LoanRequest.findOne({ expense: req.params.expenseId })
@@ -161,7 +158,6 @@ router.get('/expense/:expenseId', auth, async (req, res) => {
 });
 
 // ─── POST /api/loans/:id/accept ─────────────────────────────────────────────
-// Borrower accepts the loan. For large amounts, password required.
 router.post('/:id/accept', auth, async (req, res) => {
     try {
         const loanReq = await LoanRequest.findById(req.params.id)
@@ -179,7 +175,6 @@ router.post('/:id/accept', auth, async (req, res) => {
             return res.status(400).json({ msg: `Loan is already ${loanReq.status}` });
         }
 
-        // Password verification for large loans
         if (loanReq.requiresPasswordConfirmation) {
             const { password } = req.body;
             if (!password) {
@@ -198,31 +193,28 @@ router.post('/:id/accept', auth, async (req, res) => {
             }
         }
 
-        // Accept the loan
         const now = new Date();
         loanReq.status = 'accepted';
         loanReq.acceptedAt = now;
         await loanReq.save();
 
-        // Update the expense to mark interest start date = acceptedAt
-        // The scheduler will now start calculating from this date
         const expense = await Expense.findById(loanReq.expense._id || loanReq.expense);
         if (expense) {
-            expense.lastInterestApplied = null; // reset so scheduler picks it up fresh
-            expense.date = now; // interest accrues from acceptance date
+            expense.lastInterestApplied = null;
+            expense.date = now;
             await expense.save();
         }
 
-        // Notify the lender
-        if (loanReq.lender?.notificationSettings?.expensePaid !== false) {
-            await sendLoanEmail({
-                toUser: loanReq.lender,
-                fromUser: loanReq.borrower,
-                expense: loanReq.expense,
-                action: 'accepted',
-                loanRequest: loanReq,
-            });
-        }
+        const { createNotification } = require('../utils/notificationService');
+        await createNotification({
+            recipientId: loanReq.lender._id,
+            title: `✅ Loan accepted by ${loanReq.borrower.username}`,
+            message: `${loanReq.borrower.username} accepted your loan of ${getSym(loanReq.expense.currency)}${loanReq.expense.amount.toFixed(2)}.`,
+            category: 'loan',
+            type: 'success',
+            actionUrl: `/friends/${borrowerId}`,
+            metadata: { loanRequestId: loanReq._id }
+        });
 
         res.json({ msg: 'Loan accepted. Interest will start accruing from today.', loanRequest: loanReq });
     } catch (err) {
@@ -232,7 +224,6 @@ router.post('/:id/accept', auth, async (req, res) => {
 });
 
 // ─── POST /api/loans/:id/reject ─────────────────────────────────────────────
-// Borrower rejects the loan. The expense stays but interest rate is zeroed out.
 router.post('/:id/reject', auth, async (req, res) => {
     try {
         const loanReq = await LoanRequest.findById(req.params.id)
@@ -254,24 +245,23 @@ router.post('/:id/reject', auth, async (req, res) => {
         loanReq.rejectedAt = new Date();
         await loanReq.save();
 
-        // Zero out the interest rate on the expense so no interest ever accrues
         const expense = await Expense.findById(loanReq.expense._id || loanReq.expense);
         if (expense) {
             expense.loanInterestRate = 0;
-            expense.isLoan = true; // still a loan, just 0% — keeps the badge
+            expense.isLoan = true;
             await expense.save();
         }
 
-        // Notify lender of rejection
-        if (loanReq.lender?.notificationSettings?.expenseEdited !== false) {
-            await sendLoanEmail({
-                toUser: loanReq.lender,
-                fromUser: loanReq.borrower,
-                expense: loanReq.expense,
-                action: 'rejected',
-                loanRequest: loanReq,
-            });
-        }
+        const { createNotification } = require('../utils/notificationService');
+        await createNotification({
+            recipientId: loanReq.lender._id,
+            title: `❌ Loan declined by ${loanReq.borrower.username}`,
+            message: `${loanReq.borrower.username} declined your loan of ${getSym(loanReq.expense.currency)}${loanReq.expense.amount.toFixed(2)}.`,
+            category: 'loan',
+            type: 'warning',
+            actionUrl: `/friends/${borrowerId}`,
+            metadata: { loanRequestId: loanReq._id }
+        });
 
         res.json({ msg: 'Loan rejected. No interest will be applied.', loanRequest: loanReq });
     } catch (err) {

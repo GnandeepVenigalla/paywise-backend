@@ -149,70 +149,174 @@ router.get('/:id', auth, async (req, res) => {
 });
 
 // @route   POST api/groups/:id/members
-// @desc    Add member to group via email
+// @desc    Add member to group via email. Creates ghost users if they don't exist.
 router.post('/:id/members', auth, async (req, res) => {
     try {
         const { email, phone } = req.body;
-        const group = await Group.findById(req.params.id);
+        if (!email && !phone) return res.status(400).json({ msg: 'Please provide email or phone number' });
 
+        const group = await Group.findById(req.params.id);
         if (!group) return res.status(404).json({ msg: 'Group not found' });
 
+        // Security check: Must be a current member to add others
+        if (!group.members.includes(req.user.id)) {
+            return res.status(401).json({ msg: 'Not authorized' });
+        }
+
+        let user;
         let query;
+
         if (email) {
-            query = { email };
-        } else {
+            query = { email: email.toLowerCase() };
+            user = await User.findOne(query);
+        } else if (phone) {
             const rawPhone = phone.replace(/\D/g, '');
+            console.log(`[Paywise] Searching for phone: ${phone} (raw: ${rawPhone})`);
+            
+            // Try robust fuzzy lookup
             const phoneRegexStr = rawPhone.length > 0 ? rawPhone.split('').join('\\D*') : '^$';
             query = { phone: new RegExp(phoneRegexStr, 'i') };
+            user = await User.findOne(query);
+
+            if (!user && rawPhone.length >= 10) {
+                // Fallback: search for last 10 digits only (ignoring country code if searcher didn't provide +1)
+                const last10 = rawPhone.slice(-10);
+                user = await User.findOne({ phone: new RegExp(last10.split('').join('\\D*'), 'i') });
+            }
+            
+            console.log(`[Paywise] User found by phone? ${!!user}`);
         }
-        const user = await User.findOne(query);
 
-        // Fetch the current user to check block list
+        // If user not found, CREATE a ghost account
+        if (!user) {
+            if (email) {
+                // Generate a ghost username from the email or random string
+                let baseUsername = email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '');
+                let finalUsername = baseUsername;
+                let counter = 1;
+                while (await User.findOne({ username: finalUsername })) {
+                    finalUsername = `${baseUsername}${counter++}`;
+                }
+
+                user = new User({
+                    username: finalUsername,
+                    email: email.toLowerCase(),
+                    isGhostUser: true,
+                    isVerified: false,
+                    password: require('crypto').randomBytes(16).toString('hex') // unuseable password
+                });
+                await user.save();
+            } else {
+                // Ghost User via Phone
+                const rawPhone = phone.replace(/\D/g, '');
+                if (rawPhone.length < 5) return res.status(400).json({ msg: 'Please provide a valid phone number' });
+
+                // Create a ghost user with a placeholder email since it's required
+                // We use a formatted placeholder so we can find them later if they register via phone
+                const placeholderEmail = `ghost_phone_${rawPhone}@paywise.local`;
+                
+                // Check if this ghost already exists (maybe they were added to another group first)
+                user = await User.findOne({ 
+                    $or: [
+                        { email: placeholderEmail },
+                        { phone: new RegExp(rawPhone.split('').join('\\D*'), 'i') }
+                    ]
+                });
+
+                if (!user) {
+                    user = new User({
+                        username: `User_${rawPhone.slice(-4)}`,
+                        email: placeholderEmail,
+                        phone: rawPhone,
+                        isGhostUser: true,
+                        isVerified: false,
+                        password: require('crypto').randomBytes(16).toString('hex')
+                    });
+                    await user.save();
+                }
+            }
+        }
+
         const currentUser = await User.findById(req.user.id);
-
-        if (user && (user.blockedUsers.includes(req.user.id) || (currentUser.blockedUsers && currentUser.blockedUsers.includes(user._id)))) {
+        if (user.blockedUsers.includes(req.user.id) || (currentUser.blockedUsers && currentUser.blockedUsers.includes(user._id))) {
             return res.status(403).json({ msg: 'Cannot add a blocked user to a group.' });
         }
 
-        // If user is not yet registered or is a ghost account, send an email invite!
-        if (!user || user.isGhostUser) {
-            if (email) {
-                const baseUrl = process.env.FRONTEND_URL || 'https://www.paywiseapp.com/#';
-                await sendEmail({
-                    email,
-                    subject: `You're invited to join ${group.name} on Paywise!`,
-                    message: `Hi there!\n\nYou've been invited to join the group "${group.name}" on Paywise to easily track and split expenses.\n\nSign up here to join: ${baseUrl}/register\n\nWelcome to Paywise!`
-                });
+        // Check if already in group
+        if (group.members.includes(user._id)) {
+            return res.status(400).json({ msg: 'User is already in this group' });
+        }
 
-                // If user exists as a ghost, still add them to the group so balances start tracking
-                if (user) {
-                    if (!group.members.includes(user._id)) {
-                        group.members.push(user._id);
-                        if (group.groupType === 'community') {
-                            group.paymentCycle.push({ user: user._id, hasPaid: false });
-                        }
-                        await group.save();
-                    }
-                    return res.json({ msg: 'Invitation email sent to ghost user!' });
-                }
-
-                return res.json({ msg: 'Invitation email sent!' });
-            } else {
-                // If they searched by phone and no user found, we can't send an email
-                return res.status(404).json({ msg: 'No user found with this phone number. Ask them to register first or invite them by email.' });
+        // Add to group
+        group.pastMembers = group.pastMembers.filter(id => id.toString() !== user._id.toString());
+        group.members.push(user._id);
+        
+        // Use pendingMembers if user is real (requires acceptance)
+        if (!user.isGhostUser && user._id.toString() !== req.user.id) {
+            if (!group.pendingMembers) group.pendingMembers = [];
+            if (!group.pendingMembers.includes(user._id)) {
+                group.pendingMembers.push(user._id);
             }
         }
 
-        if (!group.members.includes(user._id)) {
-            // Remove from pastMembers if re-joining
-            group.pastMembers = group.pastMembers.filter(id => id.toString() !== user._id.toString());
-            group.members.push(user._id);
-            if (group.groupType === 'community') {
-                group.paymentCycle.push({ user: user._id, hasPaid: false });
-            }
-            await group.save();
+        if (group.groupType === 'community') {
+            group.paymentCycle.push({ user: user._id, hasPaid: false });
         }
-        res.json({ msg: 'User added to your group successfully!', group });
+        await group.save();
+
+        // ── Notifications and Emails ────────────────────────────
+        const { createNotification } = require('../utils/notificationService');
+        const baseUrl = process.env.FRONTEND_URL || 'https://www.paywiseapp.com/#';
+        
+        if (user.isGhostUser) {
+            // Send registration email for ghost users
+            await sendEmail({
+                email: user.email,
+                subject: `You've been added to ${group.name} on Paywise!`,
+                message: `Hi there!\n\n${currentUser.username} added you to the group "${group.name}" on Paywise to easily track and split expenses.\n\nYou are NOT currently registered, but your expenses are already being recorded! Sign up with this email to view your balances and join the group.\n\nSign up here: ${baseUrl}/register\n\nWelcome to Paywise!`
+            }).catch(e => console.error('Invite email fail:', e.message));
+        } else {
+            // Send in-app notification and invite email for real users
+            await createNotification({
+                recipientId: user._id,
+                title: `Group Invite: ${group.name}`,
+                message: `${currentUser.username} invited you to join the group "${group.name}".`,
+                category: 'group',
+                actionUrl: `/group/${group._id}` 
+            }).catch(e => console.error('In-app notification fail:', e.message));
+
+            await sendEmail({
+                email: user.email,
+                subject: `Invitation to join ${group.name} on Paywise`,
+                message: `Hi ${user.username}!\n\n${currentUser.username} added you to their group "${group.name}" on Paywise.\n\nLog in now to see the group: ${baseUrl}/dashboard\n\nSee you there!`
+            }).catch(e => console.error('Existing user email fail:', e.message));
+        }
+
+        res.json({ msg: user.isGhostUser ? 'New user invited and added to group!' : 'User added to group!', group, user });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   POST api/groups/:id/accept
+// @desc    Accept a group invitation
+router.post('/:id/accept', auth, async (req, res) => {
+    try {
+        const group = await Group.findById(req.params.id);
+        if (!group) return res.status(404).json({ msg: 'Group not found' });
+
+        if (!group.members.includes(req.user.id)) {
+            return res.status(400).json({ msg: 'You are not invited to this group' });
+        }
+
+        // Remove from pending if it exists
+        if (group.pendingMembers) {
+            group.pendingMembers = group.pendingMembers.filter(id => id.toString() !== req.user.id);
+        }
+
+        await group.save();
+        res.json({ msg: 'Invitation accepted!', group });
     } catch (err) {
         console.error(err.message);
         res.status(500).send('Server Error');

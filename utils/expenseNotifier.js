@@ -238,6 +238,33 @@ async function notifyExpenseAction({ actionType, expense, actorId, groupId }) {
             });
 
         await Promise.allSettled(emailPromises);
+        
+        // 7. Create in-app notifications (newly added)
+        const { notifyMany } = require('./notificationService');
+        const labels = {
+            added:   'added an expense',
+            edited:  'updated an expense',
+            deleted: 'permanently deleted an expense',
+            settled: 'recorded a settlement for'
+        };
+        const verb = labels[actionType] || 'updated';
+        const context = groupName ? `in group "${groupName}"` : 'between you two';
+        const msg = `${actor.username} ${verb} "${expense.description}" ${context}.`;
+        
+        await notifyMany({
+            recipientIds: [...participantIds],
+            title: buildSubject(actionType, actor.username, expense.description),
+            message: msg,
+            category: 'expense',
+            type: actionType === 'deleted' ? 'warning' : actionType === 'settled' ? 'success' : 'info',
+            actionUrl: groupName ? `/groups` : `/friends/${actorId}`, // Simple link logic
+            metadata: { 
+                actionType, 
+                actorId, 
+                expenseId: expense._id?.toString(), 
+                groupId: groupId?.toString() 
+            }
+        });
 
     } catch (err) {
         // Silent fail — never disrupt the API response
@@ -303,6 +330,32 @@ async function notifyCommunityUpdate({ group, actorId, expenseDescription }) {
         });
 
         await Promise.allSettled(emailPromises);
+        
+        // ── Create In-App Notifications for Community Group ────────────────
+        const { createNotification } = require('./notificationService');
+        for (const member of targetGroup.members) {
+            if (member._id.toString() === actorId.toString()) continue;
+            
+            const isNextInLine = member._id.toString() === nextInLineMemberId;
+            const title = isNextInLine 
+                ? `🎯 It's your turn in ${targetGroup.name}!` 
+                : `🔄 Rotations move in ${targetGroup.name}`;
+            
+            const msg = isNextInLine 
+                ? `It's your turn to pay the next bill for "${expenseDescription}". Stay sharp!` 
+                : `${actorName} recorded a turn. Check who's next in line!`;
+
+            await createNotification({
+                recipientId: member._id,
+                title,
+                message: msg,
+                type: isNextInLine ? 'success' : 'info',
+                category: 'expense',
+                actionUrl: `/groups`,
+                metadata: { groupId: group.toString(), isNextInLine }
+            });
+        }
+
     } catch (err) {
         console.error('[CommunityNotifier] Error:', err.message);
     }

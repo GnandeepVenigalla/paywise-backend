@@ -544,4 +544,62 @@ router.put('/support/:id', auth, isAdmin, async (req, res) => {
     }
 });
 
+// @route   POST api/admin/maintenance/phone-reminders
+// @desc    Send bulk reminders to all users missing phone numbers
+router.post('/maintenance/phone-reminders', auth, isAdmin, checkPerms(['root', 'super_admin']), async (req, res) => {
+    try {
+        const usersMissingPhone = await User.find({ 
+            $or: [
+                { phone: { $exists: false } },
+                { phone: null },
+                { phone: '' }
+            ],
+            isGhostUser: false
+        });
+
+        const sendEmail = require('../utils/sendEmail');
+        const { createNotification } = require('../utils/notificationService');
+
+        let successCount = 0;
+        let failCount = 0;
+
+        for (const user of usersMissingPhone) {
+            try {
+                // 1. In-app notification
+                await createNotification({
+                    recipientId: user.id,
+                    title: 'Action Required: Add Phone Number',
+                    message: 'Your account is missing a phone number. Please update it in Settings to secure your account.',
+                    category: 'system',
+                    actionUrl: '/account'
+                });
+
+                // 2. Email Nudge
+                await sendEmail({
+                    email: user.email,
+                    subject: 'Important: Complete your Paywise profile',
+                    message: `Hi ${user.username},\n\nWe noticed your Paywise account is missing a phone number.\n\nAdding a phone number helps your friends find you easily and keeps your account secure.\n\nPlease update it here: ${process.env.FRONTEND_URL || 'https://www.paywiseapp.com/#/account'}\n\nHappy splitting!\nThe Paywise Team`
+                });
+
+                successCount++;
+            } catch (err) {
+                console.error(`Failed to notify user ${user.email}:`, err.message);
+                failCount++;
+            }
+        }
+
+        await logActivity({
+            user: req.user.id,
+            action: `Bulk phone reminders sent. Success: ${successCount}, Failed: ${failCount}`,
+            category: 'system',
+            status: 'success'
+        });
+
+        res.json({ msg: `Process complete. Reminders sent to ${successCount} users. Errors: ${failCount}` });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
 module.exports = router;
