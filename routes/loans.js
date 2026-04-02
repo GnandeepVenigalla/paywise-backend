@@ -99,7 +99,7 @@ router.post('/', auth, async (req, res) => {
             message: `${lenderUser.username} sent you a loan request for "${expense.description}" (${getSym(expense.currency)}${expense.amount}).`,
             category: 'loan',
             type: 'info',
-            actionUrl: `/friends/${lenderId}`,
+            actionUrl: `/friend/${lenderId}`,
             metadata: { loanRequestId: loanReq._id, expenseId }
         });
 
@@ -212,7 +212,7 @@ router.post('/:id/accept', auth, async (req, res) => {
             message: `${loanReq.borrower.username} accepted your loan of ${getSym(loanReq.expense.currency)}${loanReq.expense.amount.toFixed(2)}.`,
             category: 'loan',
             type: 'success',
-            actionUrl: `/friends/${borrowerId}`,
+            actionUrl: `/friend/${borrowerId}`,
             metadata: { loanRequestId: loanReq._id }
         });
 
@@ -259,7 +259,7 @@ router.post('/:id/reject', auth, async (req, res) => {
             message: `${loanReq.borrower.username} declined your loan of ${getSym(loanReq.expense.currency)}${loanReq.expense.amount.toFixed(2)}.`,
             category: 'loan',
             type: 'warning',
-            actionUrl: `/friends/${borrowerId}`,
+            actionUrl: `/friend/${borrowerId}`,
             metadata: { loanRequestId: loanReq._id }
         });
 

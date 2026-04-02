@@ -257,7 +257,7 @@ async function notifyExpenseAction({ actionType, expense, actorId, groupId }) {
             message: msg,
             category: 'expense',
             type: actionType === 'deleted' ? 'warning' : actionType === 'settled' ? 'success' : 'info',
-            actionUrl: groupName ? `/groups` : `/friends/${actorId}`, // Simple link logic
+            actionUrl: groupId ? `/group/${groupId}?expenseId=${expense._id?.toString()}` : `/friend/${actorId}?expenseId=${expense._id?.toString()}`, 
             metadata: { 
                 actionType, 
                 actorId, 
@@ -351,7 +351,7 @@ async function notifyCommunityUpdate({ group, actorId, expenseDescription }) {
                 message: msg,
                 type: isNextInLine ? 'success' : 'info',
                 category: 'expense',
-                actionUrl: `/groups`,
+                actionUrl: `/group/${group.toString()}`,
                 metadata: { groupId: group.toString(), isNextInLine }
             });
         }
