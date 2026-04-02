@@ -50,13 +50,12 @@ router.post('/google', async (req, res) => {
                 return res.json({ msg: 'Please verify your email address. A code was sent.', requireOtp: true, email: user.email });
             }
         } else {
-            // New user — auto-register via Google
-            // Detect their currency from IP
             let defaultCurrency = 'USD';
             try {
                 const { default: axios } = require('axios');
-                const loc = await axios.get('http://ip-api.com/json/?fields=currency', { timeout: 3000 });
-                if (loc.data?.currency?.length === 3) defaultCurrency = loc.data.currency.toUpperCase();
+                // Use a more reliable geolocation source for registration
+                const loc = await axios.get('https://ipapi.co/json/', { timeout: 3000 });
+                if (loc.data?.currency) defaultCurrency = loc.data.currency.toUpperCase();
             } catch (_) {}
 
             // Generate a unique username from their Google name
@@ -75,6 +74,7 @@ router.post('/google', async (req, res) => {
                 profilePic: picture || null,
                 isVerified: false,
                 defaultCurrency,
+                timezone: req.body.timezone || 'UTC',
                 password: crypto.randomBytes(32).toString('hex')  // random unusable password
             });
             const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -178,6 +178,7 @@ router.post('/google-token', async (req, res) => {
                 profilePic: picture || null,
                 isVerified: false,
                 defaultCurrency,
+                timezone: req.body.timezone || 'UTC',
                 password: crypto.randomBytes(32).toString('hex')
             });
             const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -228,7 +229,7 @@ router.post('/google-token', async (req, res) => {
 // @route   POST api/auth/register
 // @desc    Register user (promotes ghost accounts from Splitwise migration)
 router.post('/register', async (req, res) => {
-    let { username, email, phone, password, defaultCurrency } = req.body;
+    let { username, email, phone, password, defaultCurrency, timezone } = req.body;
     if (email) email = email.toLowerCase();
     if (!username || !email || !phone || !password) {
         return res.status(400).json({ msg: 'Please enter all fields including phone number' });
@@ -263,7 +264,12 @@ router.post('/register', async (req, res) => {
             return res.status(400).json({ msg: 'User already exists and is verified' });
         }
 
-        user = new User({ username, email, phone, password, isVerified: false, defaultCurrency: defaultCurrency || 'USD' });
+        user = new User({ 
+            username, email, phone, password, 
+            isVerified: false, 
+            defaultCurrency: defaultCurrency || 'USD',
+            timezone: timezone || 'UTC'
+        });
         const salt = await bcrypt.genSalt(10);
         user.password = await bcrypt.hash(password, salt);
 

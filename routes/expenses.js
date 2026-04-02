@@ -228,12 +228,12 @@ router.get('/friends/:friendId', auth, async (req, res) => {
             if (isPaidByMe) {
                 const fSplit = exp.splits.find(s => s.user._id.toString() === friend._id.toString());
                 if (fSplit) {
-                    balance += convertAmount(fSplit.amount, sourceCurr, 'USD');
+                    balance += Math.round(convertAmount(fSplit.amount, sourceCurr, 'USD') * 100) / 100;
                 }
             } else {
                 const mySplit = exp.splits.find(s => s.user._id.toString() === req.user.id);
                 if (mySplit) {
-                    balance -= convertAmount(mySplit.amount, sourceCurr, 'USD');
+                    balance -= Math.round(convertAmount(mySplit.amount, sourceCurr, 'USD') * 100) / 100;
                 }
             }
         });
