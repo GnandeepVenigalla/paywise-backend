@@ -694,12 +694,14 @@ router.get('/friends', auth, async (req, res) => {
         const Expense = require('../models/Expense');
 
         const friendsWithBalances = await Promise.all(user.friends.map(async (friend) => {
-            const expenses = await Expense.find({
+            let expenses = await Expense.find({
                 $or: [
                     { paidBy: user._id, 'splits.user': friend._id },
                     { paidBy: friend._id, 'splits.user': user._id }
                 ]
-            });
+            }).populate('group', 'name groupType');
+
+            expenses = expenses.filter(exp => !(exp.group && exp.group.groupType === 'community'));
 
             let balance = 0; // Negative means user owes friend, Positive means friend owes user
 

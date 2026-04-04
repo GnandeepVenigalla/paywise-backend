@@ -67,14 +67,18 @@ router.get('/', auth, async (req, res) => {
                 const payerId = exp.paidBy.toString();
                 const sourceCurr = exp.currency || 'USD';
                 if (balances[payerId] !== undefined) {
-                    balances[payerId] += convertAmount(exp.amount, sourceCurr, 'USD');
+                    balances[payerId] += Math.round(convertAmount(exp.amount, sourceCurr, 'USD') * 100) / 100;
                 }
                 exp.splits.forEach(split => {
                     const userId = split.user.toString();
                     if (balances[userId] !== undefined) {
-                        balances[userId] -= convertAmount(split.amount, sourceCurr, 'USD');
+                        balances[userId] -= Math.round(convertAmount(split.amount, sourceCurr, 'USD') * 100) / 100;
                     }
                 });
+            });
+            // Round accumulated balances to 2dp to remove floating-point dust
+            Object.keys(balances).forEach(uid => {
+                balances[uid] = Math.round(balances[uid] * 100) / 100;
             });
 
             // Convert to a plain object and add balances
@@ -130,15 +134,19 @@ router.get('/:id', auth, async (req, res) => {
             const payerId = exp.paidBy._id.toString();
             const sourceCurr = exp.currency || 'USD';
             if (balances[payerId] !== undefined) {
-                balances[payerId] += convertAmount(exp.amount, sourceCurr, 'USD');
+                balances[payerId] += Math.round(convertAmount(exp.amount, sourceCurr, 'USD') * 100) / 100;
             }
 
             exp.splits.forEach(split => {
                 const debtorId = split.user._id ? split.user._id.toString() : split.user.toString();
                 if (balances[debtorId] !== undefined) {
-                    balances[debtorId] -= convertAmount(split.amount, sourceCurr, 'USD');
+                    balances[debtorId] -= Math.round(convertAmount(split.amount, sourceCurr, 'USD') * 100) / 100;
                 }
             });
+        });
+        // Round accumulated balances to 2dp to remove floating-point dust
+        Object.keys(balances).forEach(uid => {
+            balances[uid] = Math.round(balances[uid] * 100) / 100;
         });
 
         res.json({ group, expenses, balances });
@@ -366,14 +374,15 @@ router.post('/:id/leave', auth, async (req, res) => {
         expenses.forEach(exp => {
             const sourceCurr = exp.currency || 'USD';
             if (exp.paidBy.toString() === req.user.id) {
-                userBalance += convertAmount(exp.amount, sourceCurr, 'USD');
+                userBalance += Math.round(convertAmount(exp.amount, sourceCurr, 'USD') * 100) / 100;
             }
             exp.splits.forEach(split => {
                 if (split.user.toString() === req.user.id) {
-                    userBalance -= convertAmount(split.amount, sourceCurr, 'USD');
+                    userBalance -= Math.round(convertAmount(split.amount, sourceCurr, 'USD') * 100) / 100;
                 }
             });
         });
+        userBalance = Math.round(userBalance * 100) / 100;
 
         // Remove from members
         group.members = group.members.filter(id => id.toString() !== req.user.id);
@@ -421,14 +430,15 @@ router.post('/:id/remove/:userId', auth, async (req, res) => {
         expenses.forEach(exp => {
             const sourceCurr = exp.currency || 'USD';
             if (exp.paidBy.toString() === targetUserId) {
-                userBalance += convertAmount(exp.amount, sourceCurr, 'USD');
+                userBalance += Math.round(convertAmount(exp.amount, sourceCurr, 'USD') * 100) / 100;
             }
             exp.splits.forEach(split => {
                 if (split.user.toString() === targetUserId) {
-                    userBalance -= convertAmount(split.amount, sourceCurr, 'USD');
+                    userBalance -= Math.round(convertAmount(split.amount, sourceCurr, 'USD') * 100) / 100;
                 }
             });
         });
+        userBalance = Math.round(userBalance * 100) / 100;
 
         group.members = group.members.filter(id => id.toString() !== targetUserId);
 

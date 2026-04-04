@@ -90,6 +90,10 @@ router.post('/', auth, async (req, res) => {
                     // Remove old if exists (idempotent)
                     await LoanRequest.deleteOne({ expense: expense._id });
 
+                    // If the person creating the expense is the borrower, they have inherently accepted the loan's terms (interest, etc).
+                    // We only require 'pending' status if the Lender created it and needs the Borrower to confirm.
+                    const isBorrowerCreating = req.user.id === borrowerId;
+                    
                     loanRequest = await new LoanRequest({
                         expense: expense._id,
                         lender: lenderId,
@@ -97,7 +101,9 @@ router.post('/', auth, async (req, res) => {
                         amount,
                         currency: currency || 'USD',
                         interestRate: loanInterestRate,
-                        requiresPasswordConfirmation: requiresPassword,
+                        requiresPasswordConfirmation: isBorrowerCreating ? false : requiresPassword,
+                        status: isBorrowerCreating ? 'accepted' : 'pending',
+                        acceptedAt: isBorrowerCreating ? new Date() : null
                     }).save();
 
                     console.log(`[Expenses] LoanRequest created for expense ${expense._id}, borrower ${borrowerId}, requiresPassword: ${requiresPassword}`);
@@ -208,17 +214,19 @@ router.get('/friends/:friendId', auth, async (req, res) => {
             return res.status(404).json({ msg: 'Friend not found' });
         }
 
-        const expenses = await Expense.find({
+        let expenses = await Expense.find({
             $or: [
                 { paidBy: req.user.id, 'splits.user': friend._id },
                 { paidBy: friend._id, 'splits.user': req.user.id }
             ]
         })
             .sort({ date: -1 })
-            .populate('group', 'name')
+            .populate('group', 'name groupType')
             .populate('paidBy', 'username email')
             .populate('addedBy', 'username email')
             .populate('splits.user', 'username email');
+
+        expenses = expenses.filter(exp => !(exp.group && typeof exp.group === 'object' && exp.group.groupType === 'community'));
 
         const { convertAmount } = require('../utils/currency');
         let balance = 0;
@@ -419,6 +427,51 @@ router.put('/:id', auth, async (req, res) => {
             .populate('addedBy', 'username email')
             .populate('splits.user', 'username email')
             .populate('items.assignedTo', 'username email');
+
+        // ── Auto-sync LoanRequest for loan expenses ────────────────────
+        if (populatedExpense.isLoan && populatedExpense.loanInterestRate > 0) {
+            try {
+                const LoanRequest = require('../models/LoanRequest');
+                const { convertAmount } = require('../utils/currency');
+
+                const lenderId = (populatedExpense.paidBy._id || populatedExpense.paidBy).toString();
+                const borrowerSplit = (populatedExpense.splits || []).find(s => {
+                    const uid = (s.user?._id || s.user).toString();
+                    return uid !== lenderId;
+                });
+
+                if (borrowerSplit) {
+                    const borrowerId = (borrowerSplit.user?._id || borrowerSplit.user).toString();
+                    const amountInUSD = convertAmount(populatedExpense.amount, populatedExpense.currency || 'USD', 'USD');
+                    const requiresPassword = amountInUSD > 100;
+
+                    await LoanRequest.deleteOne({ expense: populatedExpense._id });
+
+                    const isBorrowerCreating = req.user.id === borrowerId;
+                    
+                    await new LoanRequest({
+                        expense: populatedExpense._id,
+                        lender: lenderId,
+                        borrower: borrowerId,
+                        amount: populatedExpense.amount,
+                        currency: populatedExpense.currency || 'USD',
+                        interestRate: populatedExpense.loanInterestRate,
+                        requiresPasswordConfirmation: isBorrowerCreating ? false : requiresPassword,
+                        status: isBorrowerCreating ? 'accepted' : 'pending', // Borrower editing/creating inherently accepts
+                        acceptedAt: isBorrowerCreating ? new Date() : null
+                    }).save();
+                }
+            } catch (loanErr) {
+                console.error('[Expenses] Failed to update/create LoanRequest on edit:', loanErr.message);
+            }
+        } else if (typeof isLoan !== 'undefined' && !isLoan) {
+            // Remove loan request if isLoan is set to false
+            try {
+                const LoanRequest = require('../models/LoanRequest');
+                await LoanRequest.deleteOne({ expense: populatedExpense._id });
+            } catch (err) {}
+        }
+        // ────────────────────────────────────────────────────────────────
 
         // ── Email notifications (non-blocking) ──────────────────────────
         notifyExpenseAction({
