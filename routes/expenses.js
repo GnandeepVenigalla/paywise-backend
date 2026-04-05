@@ -219,14 +219,23 @@ router.delete('/friends/:friendId/all', auth, async (req, res) => {
 
         if (!friend) return res.status(404).json({ msg: 'Friend not found' });
 
-        // Delete ALL direct (non-group) expenses between the two users
-        const deleteResult = await Expense.deleteMany({
+        // Optional: exclude the settle expense just posted so balance stays $0
+        const keepId = req.query.keepId;
+
+        // Delete all direct (non-group) expenses between the two users, except the settle expense
+        const deleteQuery = {
             group: null,
             $or: [
                 { paidBy: req.user.id, 'splits.user': friend._id },
                 { paidBy: friend._id, 'splits.user': req.user.id }
             ]
-        });
+        };
+        if (keepId) {
+            const mongoose = require('mongoose');
+            try { deleteQuery._id = { $ne: new mongoose.Types.ObjectId(keepId) }; } catch (_) {}
+        }
+
+        const deleteResult = await Expense.deleteMany(deleteQuery);
 
         console.log(`[SettleClear] Deleted ${deleteResult.deletedCount} expenses between ${me.username} and ${friend.username}`);
 
@@ -325,27 +334,54 @@ router.get('/friends/:friendId', auth, async (req, res) => {
         expenses = expenses.filter(exp => !(exp.group && typeof exp.group === 'object' && exp.group.groupType === 'community'));
 
         const { convertAmount } = require('../utils/currency');
+
+        // --- Detect dominant currency ---
+        // Tally the total split value per currency to find which currency dominates.
+        // If all expenses are in ONE currency (e.g. both users in India → all INR),
+        // we skip USD conversion entirely and return balance in that currency.
+        const currencyTotals = {};
+        expenses.forEach(exp => {
+            const c = (exp.currency || 'USD').toUpperCase();
+            const isPaidByMe = exp.paidBy._id.toString() === req.user.id;
+            let splitAmt = 0;
+            if (isPaidByMe) {
+                const fSplit = exp.splits.find(s => s.user._id.toString() === friend._id.toString());
+                if (fSplit) splitAmt = fSplit.amount;
+            } else {
+                const mySplit = exp.splits.find(s => s.user._id.toString() === req.user.id);
+                if (mySplit) splitAmt = mySplit.amount;
+            }
+            if (splitAmt > 0) currencyTotals[c] = (currencyTotals[c] || 0) + splitAmt;
+        });
+
+        const currencies = Object.keys(currencyTotals);
+        const dominantCurrency = currencies.length === 1
+            ? currencies[0]  // Pure single-currency: no conversion needed
+            : 'USD';         // Mixed currencies: normalise through USD
+
+        // --- Calculate balance in dominantCurrency ---
         let balance = 0;
         expenses.forEach(exp => {
             const isPaidByMe = exp.paidBy._id.toString() === req.user.id;
-            const sourceCurr = exp.currency || 'USD';
+            const sourceCurr = (exp.currency || 'USD').toUpperCase();
             if (isPaidByMe) {
                 const fSplit = exp.splits.find(s => s.user._id.toString() === friend._id.toString());
                 if (fSplit) {
-                    balance += Math.round(convertAmount(fSplit.amount, sourceCurr, 'USD') * 100) / 100;
+                    balance += Math.round(convertAmount(fSplit.amount, sourceCurr, dominantCurrency) * 100) / 100;
                 }
             } else {
                 const mySplit = exp.splits.find(s => s.user._id.toString() === req.user.id);
                 if (mySplit) {
-                    balance -= Math.round(convertAmount(mySplit.amount, sourceCurr, 'USD') * 100) / 100;
+                    balance -= Math.round(convertAmount(mySplit.amount, sourceCurr, dominantCurrency) * 100) / 100;
                 }
             }
         });
 
-        // Round to 2 decimal places to avoid floating-point dust showing as phantom debt
         balance = Math.round(balance * 100) / 100;
 
-        res.json({ friend, expenses, balance });
+        // Return balanceCurrency so the frontend knows what currency the balance is in
+        // and can display it without any further conversion.
+        res.json({ friend, expenses, balance, balanceCurrency: dominantCurrency });
     } catch (err) {
         console.error(err.message);
         if (err.kind === 'ObjectId') {
@@ -418,6 +454,117 @@ router.post('/scan', auth, async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ msg: 'Failed to scan receipt with AI. Ensure image is clear.' });
+    }
+});
+
+// @route   POST api/expenses/:id/settle-my-share
+// @desc    Settle a specific expense share: notify payer + delete the expense
+router.post('/:id/settle-my-share', auth, async (req, res) => {
+    try {
+        const sendEmail = require('../utils/sendEmail');
+        const { notifyMany } = require('../utils/notificationService');
+        const { getCurrencySymbol } = require('../utils/currency');
+
+        const expense = await Expense.findById(req.params.id)
+            .populate('paidBy', 'username email notificationSettings')
+            .populate('splits.user', 'username email');
+
+        if (!expense) return res.status(404).json({ msg: 'Expense not found' });
+
+        const myId = req.user.id.toString();
+
+        // Must be in the splits (not the payer)
+        const mySplit = expense.splits.find(s => (s.user?._id || s.user).toString() === myId);
+        if (!mySplit) {
+            return res.status(403).json({ msg: 'You are not a participant in this expense.' });
+        }
+        const paidById = (expense.paidBy?._id || expense.paidBy).toString();
+        if (paidById === myId) {
+            return res.status(400).json({ msg: 'You are the payer — you cannot settle your own expense.' });
+        }
+
+        const me = await User.findById(myId).select('username');
+        const payer = expense.paidBy;
+        const sym = getCurrencySymbol(expense.currency || 'USD');
+        const amtDisplay = `${sym}${Number(mySplit.amount).toFixed(2)}`;
+
+        // Capture snapshot before deleting
+        const snapshot = {
+            description: expense.description,
+            amount: mySplit.amount,
+            currency: expense.currency,
+            paidBy: { _id: payer._id, username: payer.username },
+            splits: expense.splits,
+        };
+
+        // ── Delete the expense ───────────────────────────────────────────────
+        await expense.deleteOne();
+
+        // ── Email the payer ─────────────────────────────────────────────────
+        const emailHtml = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Expense Settled — Paywise</title></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:32px 0;">
+    <tr><td align="center">
+      <table width="100%" style="max-width:520px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+        <tr><td style="background:linear-gradient(135deg,#064e3b 0%,#065f46 100%);padding:28px 32px;text-align:center;">
+          <h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;">Paywise</h1>
+          <p style="margin:4px 0 0;color:#a7f3d0;font-size:13px;">Smart Bill Splitting</p>
+        </td></tr>
+        <tr><td style="background:#f0fdf4;border-bottom:2px solid #16a34a30;padding:20px 32px;text-align:center;">
+          <span style="font-size:32px;">✅</span>
+          <p style="margin:8px 0 0;font-size:16px;font-weight:800;color:#16a34a;text-transform:uppercase;letter-spacing:0.05em;">Share Settled!</p>
+        </td></tr>
+        <tr><td style="padding:28px 32px;">
+          <p style="margin:0 0 20px;font-size:16px;color:#374151;line-height:1.6;">
+            Hi <strong>${payer.username}</strong>,<br>
+            <strong>${me.username}</strong> has settled their share of <strong>"${snapshot.description}"</strong>.
+          </p>
+          <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:16px 20px;margin-bottom:24px;">
+            <p style="margin:0 0 4px;font-size:12px;font-weight:700;color:#9ca3af;text-transform:uppercase;">Amount Settled</p>
+            <p style="margin:0;font-size:22px;font-weight:900;color:#059669;">${amtDisplay}</p>
+            <p style="margin:6px 0 0;font-size:13px;color:#6b7280;">for <em>${snapshot.description}</em></p>
+          </div>
+          <div style="text-align:center;">
+            <a href="https://paywiseapp.com" style="display:inline-block;background:#059669;color:#fff;font-size:15px;font-weight:700;padding:14px 32px;border-radius:10px;text-decoration:none;">Open Paywise →</a>
+          </div>
+        </td></tr>
+        <tr><td style="padding:16px 32px 28px;text-align:center;border-top:1px solid #f3f4f6;">
+          <p style="margin:0;font-size:12px;color:#9ca3af;">
+            <a href="https://paywiseapp.com/account" style="color:#059669;text-decoration:none;">Manage settings</a> · paywiseapp.com
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
+
+        if (payer.notificationSettings?.expensePaid !== false) {
+            sendEmail({
+                email: payer.email,
+                subject: `✅ ${me.username} settled "${snapshot.description}" — ${amtDisplay}`,
+                message: `Hi ${payer.username},\n\n${me.username} settled their share (${amtDisplay}) of "${snapshot.description}" on Paywise.\n\nhttps://paywiseapp.com\n\n— The Paywise Team`,
+                html: emailHtml,
+            }).catch(err => console.error('[SettleMyShare] Email error:', err.message));
+        }
+
+        // ── In-app notification ──────────────────────────────────────────────
+        notifyMany({
+            recipientIds: [paidById],
+            title: `✅ ${me.username} paid their share!`,
+            message: `${me.username} settled ${amtDisplay} for "${snapshot.description}".`,
+            category: 'expense',
+            type: 'success',
+            actionUrl: `/friend/${myId}`,
+            metadata: { actionType: 'settled_share', actorId: myId }
+        }).catch(err => console.error('[SettleMyShare] Notify error:', err.message));
+
+        res.json({ msg: `Expense settled and deleted. ${payer.username} has been notified.` });
+    } catch (err) {
+        console.error('[SettleMyShare] Error:', err.message);
+        if (err.kind === 'ObjectId') return res.status(404).json({ msg: 'Expense not found' });
+        res.status(500).send('Server Error');
     }
 });
 
