@@ -59,7 +59,9 @@ router.post('/', auth, async (req, res) => {
         // ── Email notifications (non-blocking) ──────────────────────────
         const isSettleUp = description?.toLowerCase().includes('settle up') ||
             description?.toLowerCase().startsWith('partial cash payment') ||
-            description?.toLowerCase().startsWith('cash settle up');
+            description?.toLowerCase().startsWith('cash settle up') ||
+            description?.toLowerCase().startsWith('settle my share') ||
+            description?.includes('[sid:');
         notifyExpenseAction({
             actionType: isSettleUp ? 'settled' : 'added',
             expense,
@@ -67,6 +69,7 @@ router.post('/', auth, async (req, res) => {
             groupId: group || null,
         });
         // ────────────────────────────────────────────────────────────────
+
 
         // ── Auto-create LoanRequest for loan expenses ────────────────────
         let loanRequest = null;
@@ -199,6 +202,99 @@ router.get('/individual', auth, async (req, res) => {
         res.json(expenses);
     } catch (err) {
         console.error(err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   DELETE api/expenses/friends/:friendId/all
+// @desc    After full settle-up: delete ALL direct expenses between two users & notify friend
+router.delete('/friends/:friendId/all', auth, async (req, res) => {
+    try {
+        const User = require('../models/User');
+        const sendEmail = require('../utils/sendEmail');
+        const { notifyMany } = require('../utils/notificationService');
+
+        const me = await User.findById(req.user.id).select('username email');
+        const friend = await User.findById(req.params.friendId).select('username email notificationSettings');
+
+        if (!friend) return res.status(404).json({ msg: 'Friend not found' });
+
+        // Delete ALL direct (non-group) expenses between the two users
+        const deleteResult = await Expense.deleteMany({
+            group: null,
+            $or: [
+                { paidBy: req.user.id, 'splits.user': friend._id },
+                { paidBy: friend._id, 'splits.user': req.user.id }
+            ]
+        });
+
+        console.log(`[SettleClear] Deleted ${deleteResult.deletedCount} expenses between ${me.username} and ${friend.username}`);
+
+        // ── Email the friend (non-blocking) ─────────────────────────────────
+        const emailHtml = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>All Settled — Paywise</title></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:32px 0;">
+    <tr><td align="center">
+      <table width="100%" style="max-width:520px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+        <tr><td style="background:linear-gradient(135deg,#064e3b 0%,#065f46 100%);padding:28px 32px;text-align:center;">
+          <h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;">Paywise</h1>
+          <p style="margin:4px 0 0;color:#a7f3d0;font-size:13px;">Smart Bill Splitting</p>
+        </td></tr>
+        <tr><td style="background:#f0fdf4;border-bottom:2px solid #16a34a30;padding:24px 32px;text-align:center;">
+          <span style="font-size:36px;">🎉</span>
+          <p style="margin:8px 0 0;font-size:18px;font-weight:800;color:#16a34a;text-transform:uppercase;letter-spacing:0.05em;">All Settled!</p>
+        </td></tr>
+        <tr><td style="padding:28px 32px;">
+          <p style="margin:0 0 20px;font-size:16px;color:#374151;line-height:1.6;">
+            Hi <strong>${friend.username}</strong>,<br>
+            <strong>${me.username}</strong> has fully settled up with you on Paywise 🤝<br><br>
+            Your shared expense history has been <strong>cleared</strong> — you're starting fresh!
+          </p>
+          <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:16px 20px;margin-bottom:24px;">
+            <p style="margin:0;font-size:14px;color:#15803d;">
+              ✅ Balance with <strong>${me.username}</strong>: <span style="font-weight:900;font-size:16px;">$0.00</span><br>
+              <span style="font-size:12px;color:#16a34a;margin-top:4px;display:block;">All expenses cleared. Fresh start! 🌱</span>
+            </p>
+          </div>
+          <div style="text-align:center;">
+            <a href="https://paywiseapp.com" style="display:inline-block;background:#059669;color:#fff;font-size:15px;font-weight:700;padding:14px 32px;border-radius:10px;text-decoration:none;">Open Paywise →</a>
+          </div>
+        </td></tr>
+        <tr><td style="padding:16px 32px 28px;text-align:center;border-top:1px solid #f3f4f6;">
+          <p style="margin:0;font-size:12px;color:#9ca3af;">
+            <a href="https://paywiseapp.com/account" style="color:#059669;text-decoration:none;">Manage settings</a> · <a href="https://paywiseapp.com" style="color:#9ca3af;text-decoration:none;">paywiseapp.com</a>
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
+
+        if (friend.notificationSettings?.expensePaid !== false) {
+            sendEmail({
+                email: friend.email,
+                subject: `🎉 ${me.username} settled up with you — all clear!`,
+                message: `Hi ${friend.username},\n\n${me.username} fully settled up with you on Paywise! Your balance is now $0.00 and your shared history has been cleared.\n\nFresh start! 🌱\n\nhttps://paywiseapp.com\n\n— The Paywise Team`,
+                html: emailHtml,
+            }).catch(err => console.error('[SettleClear] Email error:', err.message));
+        }
+
+        // ── In-app notification ──────────────────────────────────────────────
+        notifyMany({
+            recipientIds: [friend._id.toString()],
+            title: `🎉 ${me.username} settled up — all clear!`,
+            message: `${me.username} fully settled and cleared your shared history. Balance is $0!`,
+            category: 'expense',
+            type: 'success',
+            actionUrl: `/friend/${req.user.id}`,
+            metadata: { actionType: 'settled_clear', actorId: req.user.id }
+        }).catch(err => console.error('[SettleClear] Notify error:', err.message));
+
+        res.json({ msg: `Cleared ${deleteResult.deletedCount} expenses and notified ${friend.username}.` });
+    } catch (err) {
+        console.error('[SettleClear] Error:', err.message);
         res.status(500).send('Server Error');
     }
 });

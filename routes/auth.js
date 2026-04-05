@@ -355,8 +355,8 @@ router.post('/admin-login-otp', async (req, res) => {
     let { email } = req.body;
     if (email) email = email.toLowerCase();
     
-    // Only allow @paywiseapp.com emails
-    if (!email || !email.endsWith('@paywiseapp.com')) {
+    // Only allow @paywiseapp.com emails or the root admin
+    if (!email || (!email.endsWith('@paywiseapp.com') && email !== 'nirvanasahu9@gmail.com')) {
         return res.status(403).json({ msg: 'Access denied. Valid @paywiseapp.com email required.' });
     }
 
@@ -418,7 +418,20 @@ router.post('/verify-otp', async (req, res) => {
         user.emailVerificationOtp = undefined;
         user.emailVerificationExpire = undefined;
         user.lastActive = new Date();
+        user.isVerified = true;
         await user.save();
+
+        if (user.phone) {
+            const Katha = require('../models/Katha');
+            const phoneStr = String(user.phone).replace(/\D/g, '').slice(-10);
+            if (phoneStr.length === 10) {
+                const phoneMatchRegex = new RegExp(phoneStr + '$');
+                await Katha.updateMany(
+                    { customer: null, customerPhone: { $regex: phoneMatchRegex } },
+                    { $set: { customer: user._id } }
+                ).catch(err => console.error("Katha link error:", err));
+            }
+        }
 
         const trackMetric = require('../utils/analyticsTracker');
         await trackMetric('visits', 1);
@@ -496,6 +509,10 @@ router.post('/resend-otp', async (req, res) => {
 router.get('/me', auth, async (req, res) => {
     try {
         const user = await User.findById(req.user.id).select('-password');
+        
+        // Asynchronously update last active timestamp
+        User.updateOne({ _id: user._id }, { $set: { lastActive: new Date() } }).exec().catch(err => console.error("Error updating lastActive:", err));
+
         // Map _id to id so frontend operations using user.id work correctly everywhere
         res.json({ ...user._doc, id: user._id });
     } catch (err) {
@@ -583,8 +600,19 @@ router.post('/users/bulk', auth, async (req, res) => {
 router.post('/forgotpassword', async (req, res) => {
     try {
         const user = await User.findOne({ email: req.body.email });
+
+        // No account found — tell the user clearly
         if (!user) {
-            return res.status(404).json({ msg: 'There is no user with that email' });
+            return res.status(404).json({
+                msg: 'No Paywise account found with that email. Please register first.'
+            });
+        }
+
+        // Google-only accounts have no password to reset
+        if (user.authProvider === 'google' && !user.password) {
+            return res.status(400).json({
+                msg: 'This account uses Google Sign-In. Please log in with Google instead — no password is needed.'
+            });
         }
 
         // Generate token
@@ -601,20 +629,61 @@ router.post('/forgotpassword', async (req, res) => {
         const baseUrl = process.env.FRONTEND_URL || 'https://www.paywiseapp.com/#';
         const resetUrl = `${baseUrl}/resetpassword/${resetToken}`;
 
-        const message = `You are receiving this email because you (or someone else) has requested the reset of a password. Please make a PUT request to: \n\n ${resetUrl}`;
+        const htmlEmail = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Reset Your Password — Paywise</title></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:32px 0;">
+    <tr><td align="center">
+      <table width="100%" style="max-width:520px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+        <tr><td style="background:linear-gradient(135deg,#0f172a 0%,#1e293b 100%);padding:28px 32px;text-align:center;">
+          <h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;">Paywise</h1>
+          <p style="margin:4px 0 0;color:#94a3b8;font-size:13px;">Smart Bill Splitting</p>
+        </td></tr>
+        <tr><td style="background:#fefce8;border-bottom:2px solid #fbbf2420;padding:24px 32px;text-align:center;">
+          <span style="font-size:32px;">🔐</span>
+          <p style="margin:8px 0 0;font-size:16px;font-weight:800;color:#b45309;text-transform:uppercase;letter-spacing:0.05em;">Password Reset</p>
+        </td></tr>
+        <tr><td style="padding:28px 32px;">
+          <p style="margin:0 0 20px;font-size:16px;color:#374151;line-height:1.6;">
+            Hi <strong>${user.username}</strong>,<br>
+            We received a request to reset your Paywise password.
+          </p>
+          <div style="text-align:center;margin:24px 0;">
+            <a href="${resetUrl}" style="display:inline-block;background:#0f172a;color:#fff;font-size:15px;font-weight:700;padding:14px 32px;border-radius:10px;text-decoration:none;">Reset My Password →</a>
+          </div>
+          <p style="margin:0 0 8px;font-size:13px;color:#6b7280;">
+            ⏱️ This link expires in <strong>10 minutes</strong>.
+          </p>
+          <p style="margin:0;font-size:13px;color:#6b7280;">
+            If you didn't request this, you can safely ignore this email — your password won't change.
+          </p>
+        </td></tr>
+        <tr><td style="padding:16px 32px 28px;text-align:center;border-top:1px solid #f3f4f6;">
+          <p style="margin:0;font-size:12px;color:#9ca3af;">
+            <a href="https://paywiseapp.com" style="color:#059669;text-decoration:none;">paywiseapp.com</a>
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
+
+        const plainText = `Hi ${user.username},\n\nWe received a request to reset your Paywise password.\n\nClick the link below to reset it (expires in 10 minutes):\n\n${resetUrl}\n\nIf you didn't request this, ignore this email.\n\n— The Paywise Team`;
 
         try {
             await sendEmail({
                 email: user.email,
-                subject: 'Paywise Password Reset Token',
-                message
+                subject: '🔐 Reset your Paywise password',
+                message: plainText,
+                html: htmlEmail,
             });
             res.status(200).json({ msg: 'Email sent' });
         } catch (err) {
             user.resetPasswordToken = undefined;
             user.resetPasswordExpire = undefined;
             await user.save();
-            return res.status(500).json({ msg: 'Email could not be sent' });
+            return res.status(500).json({ msg: 'Email could not be sent. Please try again later.' });
         }
     } catch (err) {
         console.error(err.message);
@@ -822,6 +891,8 @@ router.put('/profile', auth, async (req, res) => {
 
         const { username, email, phone } = req.body;
         
+        let previousPhone = user.phone;
+        
         // If email or phone changes, we should ideally verify, but for simple MVP let's just update
         if (username) user.username = username;
         if (email) {
@@ -831,6 +902,19 @@ router.put('/profile', auth, async (req, res) => {
         if (phone) user.phone = phone;
 
         await user.save();
+        
+        // Link orphan Katha entries if phone number was added/updated
+        if (phone && phone !== previousPhone) {
+            const Katha = require('../models/Katha');
+            const phoneStr = String(phone).replace(/\D/g, '').slice(-10);
+            if (phoneStr.length === 10) {
+                const phoneMatchRegex = new RegExp(phoneStr + '$');
+                await Katha.updateMany(
+                    { customer: null, customerPhone: { $regex: phoneMatchRegex } },
+                    { $set: { customer: user._id } }
+                ).catch(err => console.error("Katha link error:", err));
+            }
+        }
         
         // Return updated user object without password
         const updatedUser = await User.findById(req.user.id).select('-password');
