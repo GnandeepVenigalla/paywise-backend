@@ -379,6 +379,18 @@ router.get('/friends/:friendId', auth, async (req, res) => {
 
         balance = Math.round(balance * 100) / 100;
 
+        // ── Phantom balance guard (cross-currency drift fix) ──────────────────
+        // When two users transact in DIFFERENT currencies (e.g. USD ↔ INR), the
+        // balance is normalised through USD using fixed exchange rates. Small
+        // discrepancies accumulate from rounding, creating "phantom" debts after
+        // a full settlement. If the dominant currency required USD normalisation
+        // (i.e. expenses were multi-currency) AND the resulting balance is tiny,
+        // snap it to zero to prevent a confusing residual.
+        const isMixedCurrency = currencies.length > 1;
+        if (isMixedCurrency && Math.abs(balance) < 0.50) {
+            balance = 0;
+        }
+
         // Return balanceCurrency so the frontend knows what currency the balance is in
         // and can display it without any further conversion.
         res.json({ friend, expenses, balance, balanceCurrency: dominantCurrency });
