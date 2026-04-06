@@ -206,6 +206,96 @@ router.get('/individual', auth, async (req, res) => {
     }
 });
 
+// @route   DELETE api/expenses/group/:groupId/all
+// @desc    After full group settle-up: delete ALL expenses for the group & notify all members
+router.delete('/group/:groupId/all', auth, async (req, res) => {
+    try {
+        const User = require('../models/User');
+        const Group = require('../models/Group');
+        const sendEmail = require('../utils/sendEmail');
+        const { notifyMany } = require('../utils/notificationService');
+
+        const me = await User.findById(req.user.id).select('username email');
+        const group = await Group.findById(req.params.groupId).populate('members', 'username email notificationSettings');
+
+        if (!group) return res.status(404).json({ msg: 'Group not found' });
+
+        // Only members can trigger this
+        const isMember = group.members.some(m => m._id.toString() === req.user.id);
+        if (!isMember) return res.status(403).json({ msg: 'Not a member of this group' });
+
+        // Delete ALL expenses belonging to this group
+        const deleteResult = await Expense.deleteMany({ group: group._id });
+
+        console.log(`[GroupSettleClear] Deleted ${deleteResult.deletedCount} expenses for group "${group.name}" by ${me.username}`);
+
+        // Notify all OTHER members
+        const otherMembers = group.members.filter(m => m._id.toString() !== req.user.id);
+        const recipientIds = otherMembers.map(m => m._id.toString());
+
+        notifyMany({
+            recipientIds,
+            title: `🎉 ${group.name} — fully settled!`,
+            message: `${me.username} settled up the group. All expense history for "${group.name}" has been cleared. Balance: $0!`,
+            category: 'expense',
+            type: 'success',
+            actionUrl: `/group/${group._id}`,
+            metadata: { actionType: 'group_settled_clear', actorId: req.user.id, groupId: group._id }
+        }).catch(err => console.error('[GroupSettleClear] Notify error:', err.message));
+
+        // Email each member (non-blocking)
+        otherMembers.forEach(member => {
+            if (member.notificationSettings?.expensePaid === false) return;
+            const emailHtml = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Group Settled — Paywise</title></head>
+<body style="margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f8fafc;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:32px 0;">
+    <tr><td align="center">
+      <table width="100%" style="max-width:520px;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+        <tr><td style="background:linear-gradient(135deg,#064e3b 0%,#065f46 100%);padding:28px 32px;text-align:center;">
+          <h1 style="margin:0;color:#fff;font-size:22px;font-weight:800;">Paywise</h1>
+          <p style="margin:4px 0 0;color:#a7f3d0;font-size:13px;">Smart Bill Splitting</p>
+        </td></tr>
+        <tr><td style="background:#f0fdf4;border-bottom:2px solid #16a34a30;padding:24px 32px;text-align:center;">
+          <span style="font-size:36px;">🎉</span>
+          <p style="margin:8px 0 0;font-size:18px;font-weight:800;color:#16a34a;">"${group.name}" is All Settled!</p>
+        </td></tr>
+        <tr><td style="padding:28px 32px;">
+          <p style="margin:0 0 20px;font-size:16px;color:#374151;line-height:1.6;">
+            Hi <strong>${member.username}</strong>,<br>
+            <strong>${me.username}</strong> has fully settled up the group <strong>${group.name}</strong> on Paywise 🤝<br><br>
+            All shared expense history has been <strong>cleared</strong> — fresh start!
+          </p>
+          <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:16px 20px;margin-bottom:24px;">
+            <p style="margin:0;font-size:14px;color:#15803d;">
+              ✅ Group balance: <strong style="font-size:16px;">$0.00</strong><br>
+              <span style="font-size:12px;color:#16a34a;margin-top:4px;display:block;">All expenses cleared. Fresh start! 🌱</span>
+            </p>
+          </div>
+          <div style="text-align:center;">
+            <a href="https://paywiseapp.com" style="display:inline-block;background:#059669;color:#fff;font-size:15px;font-weight:700;padding:14px 32px;border-radius:10px;text-decoration:none;">Open Paywise →</a>
+          </div>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>`;
+            sendEmail({
+                email: member.email,
+                subject: `🎉 ${me.username} settled "${group.name}" — all clear!`,
+                message: `Hi ${member.username},\n\n${me.username} fully settled the group "${group.name}" on Paywise! All expense history has been cleared.\n\nFresh start! 🌱\n\nhttps://paywiseapp.com\n\n— The Paywise Team`,
+                html: emailHtml,
+            }).catch(err => console.error('[GroupSettleClear] Email error:', err.message));
+        });
+
+        res.json({ msg: `Cleared ${deleteResult.deletedCount} expenses for group "${group.name}".` });
+    } catch (err) {
+        console.error('[GroupSettleClear] Error:', err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
 // @route   DELETE api/expenses/friends/:friendId/all
 // @desc    After full settle-up: delete ALL direct expenses between two users & notify friend
 router.delete('/friends/:friendId/all', auth, async (req, res) => {
@@ -341,7 +431,11 @@ router.get('/friends/:friendId', auth, async (req, res) => {
         // we skip USD conversion entirely and return balance in that currency.
         const currencyTotals = {};
         expenses.forEach(exp => {
-            const c = (exp.currency || 'USD').toUpperCase();
+            // Skip expenses with no currency — don't let them pollute currency detection.
+            // Old/group expenses with exp.currency = null would otherwise default to 'USD'
+            // and falsely trigger a "mixed currency" path for pure INR (or USD) pairs.
+            if (!exp.currency) return;
+            const c = exp.currency.toUpperCase();
             const isPaidByMe = exp.paidBy._id.toString() === req.user.id;
             let splitAmt = 0;
             if (isPaidByMe) {
@@ -363,7 +457,9 @@ router.get('/friends/:friendId', auth, async (req, res) => {
         let balance = 0;
         expenses.forEach(exp => {
             const isPaidByMe = exp.paidBy._id.toString() === req.user.id;
-            const sourceCurr = (exp.currency || 'USD').toUpperCase();
+            // Null-currency expenses are treated as dominantCurrency (no conversion needed).
+            // This prevents tiny legacy/group expenses with no currency from distorting balances.
+            const sourceCurr = (exp.currency || dominantCurrency).toUpperCase();
             if (isPaidByMe) {
                 const fSplit = exp.splits.find(s => s.user._id.toString() === friend._id.toString());
                 if (fSplit) {

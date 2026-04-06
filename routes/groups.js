@@ -79,6 +79,8 @@ router.get('/', auth, async (req, res) => {
             // Round accumulated balances to 2dp to remove floating-point dust
             Object.keys(balances).forEach(uid => {
                 balances[uid] = Math.round(balances[uid] * 100) / 100;
+                // Phantom balance guard: snap tiny residuals to zero
+                if (Math.abs(balances[uid]) < 0.02) balances[uid] = 0;
             });
 
             // Convert to a plain object and add balances
@@ -147,6 +149,8 @@ router.get('/:id', auth, async (req, res) => {
         // Round accumulated balances to 2dp to remove floating-point dust
         Object.keys(balances).forEach(uid => {
             balances[uid] = Math.round(balances[uid] * 100) / 100;
+            // Phantom balance guard: snap tiny residuals to zero
+            if (Math.abs(balances[uid]) < 0.02) balances[uid] = 0;
         });
 
         res.json({ group, expenses, balances });

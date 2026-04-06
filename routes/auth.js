@@ -778,7 +778,9 @@ router.get('/friends', auth, async (req, res) => {
             // --- Detect dominant currency (mirrors /expenses/friends/:friendId logic) ---
             const currencyTotals = {};
             expenses.forEach(exp => {
-                const c = (exp.currency || 'USD').toUpperCase();
+                // Skip null-currency expenses from detection—same fix as /expenses/friends/:friendId
+                if (!exp.currency) return;
+                const c = exp.currency.toUpperCase();
                 const isPaidByMe = exp.paidBy.toString() === user._id.toString();
                 let splitAmt = 0;
                 if (isPaidByMe) {
@@ -798,7 +800,8 @@ router.get('/friends', auth, async (req, res) => {
             let balance = 0;
             expenses.forEach(exp => {
                 const isPaidByMe = exp.paidBy.toString() === user._id.toString();
-                const sourceCurr = (exp.currency || 'USD').toUpperCase();
+                // Null-currency expenses treated as dominantCurrency — no conversion
+                const sourceCurr = (exp.currency || dominantCurrency).toUpperCase();
                 if (isPaidByMe) {
                     const friendSplit = exp.splits.find(s => s.user.toString() === friend._id.toString());
                     if (friendSplit)
