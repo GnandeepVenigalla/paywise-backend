@@ -425,15 +425,12 @@ router.get('/friends/:friendId', auth, async (req, res) => {
 
         const { convertAmount } = require('../utils/currency');
 
-        // --- Detect dominant currency ---
-        // Tally the total split value per currency to find which currency dominates.
-        // If all expenses are in ONE currency (e.g. both users in India → all INR),
-        // we skip USD conversion entirely and return balance in that currency.
+        // Determine dominant currency from actual split amounts.
+        // Single-currency pair (e.g. both INR): balances stay in that currency.
+        // Mixed pair (INR + USD): normalise through USD as a common base.
+        // Expenses with no currency field are excluded from detection (legacy data).
         const currencyTotals = {};
         expenses.forEach(exp => {
-            // Skip expenses with no currency — don't let them pollute currency detection.
-            // Old/group expenses with exp.currency = null would otherwise default to 'USD'
-            // and falsely trigger a "mixed currency" path for pure INR (or USD) pairs.
             if (!exp.currency) return;
             const c = exp.currency.toUpperCase();
             const isPaidByMe = exp.paidBy._id.toString() === req.user.id;
@@ -449,46 +446,28 @@ router.get('/friends/:friendId', auth, async (req, res) => {
         });
 
         const currencies = Object.keys(currencyTotals);
-        const dominantCurrency = currencies.length === 1
-            ? currencies[0]  // Pure single-currency: no conversion needed
-            : 'USD';         // Mixed currencies: normalise through USD
+        const dominantCurrency = currencies.length === 1 ? currencies[0] : 'USD';
 
-        // --- Calculate balance in dominantCurrency ---
+        // Accumulate balance in dominantCurrency.
+        // Null-currency expenses (legacy) are treated as dominantCurrency — no conversion applied.
         let balance = 0;
         expenses.forEach(exp => {
             const isPaidByMe = exp.paidBy._id.toString() === req.user.id;
-            // Null-currency expenses are treated as dominantCurrency (no conversion needed).
-            // This prevents tiny legacy/group expenses with no currency from distorting balances.
             const sourceCurr = (exp.currency || dominantCurrency).toUpperCase();
             if (isPaidByMe) {
                 const fSplit = exp.splits.find(s => s.user._id.toString() === friend._id.toString());
-                if (fSplit) {
-                    balance += Math.round(convertAmount(fSplit.amount, sourceCurr, dominantCurrency) * 100) / 100;
-                }
+                if (fSplit) balance += Math.round(convertAmount(fSplit.amount, sourceCurr, dominantCurrency) * 100) / 100;
             } else {
                 const mySplit = exp.splits.find(s => s.user._id.toString() === req.user.id);
-                if (mySplit) {
-                    balance -= Math.round(convertAmount(mySplit.amount, sourceCurr, dominantCurrency) * 100) / 100;
-                }
+                if (mySplit) balance -= Math.round(convertAmount(mySplit.amount, sourceCurr, dominantCurrency) * 100) / 100;
             }
         });
 
         balance = Math.round(balance * 100) / 100;
 
-        // ── Phantom balance guard (cross-currency drift fix) ──────────────────
-        // When two users transact in DIFFERENT currencies (e.g. USD ↔ INR), the
-        // balance is normalised through USD using fixed exchange rates. Small
-        // discrepancies accumulate from rounding, creating "phantom" debts after
-        // a full settlement. If the dominant currency required USD normalisation
-        // (i.e. expenses were multi-currency) AND the resulting balance is tiny,
-        // snap it to zero to prevent a confusing residual.
-        const isMixedCurrency = currencies.length > 1;
-        if (isMixedCurrency && Math.abs(balance) < 0.50) {
-            balance = 0;
-        }
+        // Snap sub-50¢ residuals to zero for mixed-currency pairs (cross-rate rounding drift).
+        if (currencies.length > 1 && Math.abs(balance) < 0.50) balance = 0;
 
-        // Return balanceCurrency so the frontend knows what currency the balance is in
-        // and can display it without any further conversion.
         res.json({ friend, expenses, balance, balanceCurrency: dominantCurrency });
     } catch (err) {
         console.error(err.message);

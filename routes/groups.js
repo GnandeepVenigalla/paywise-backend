@@ -63,29 +63,41 @@ router.get('/', auth, async (req, res) => {
             group.pastMembers.forEach(m => { balances[m._id.toString()] = 0; });
 
             const { convertAmount } = require('../utils/currency');
+
+            // Detect dominant currency from expenses (skip null-currency expenses from detection)
+            const expCurrencyTotals = {};
+            expenses.forEach(exp => {
+                if (!exp.currency) return;
+                const c = exp.currency.toUpperCase();
+                expCurrencyTotals[c] = (expCurrencyTotals[c] || 0) + (exp.amount || 0);
+            });
+            const uniqueExpCurrencies = Object.keys(expCurrencyTotals);
+            // If all expenses are in one currency (e.g. all INR), use that. Only use USD if mixed.
+            const groupNativeCurrency = uniqueExpCurrencies.length === 1 ? uniqueExpCurrencies[0] : 'USD';
+
             expenses.forEach(exp => {
                 const payerId = exp.paidBy.toString();
-                const sourceCurr = exp.currency || 'USD';
+                const sourceCurr = (exp.currency || groupNativeCurrency).toUpperCase();
                 if (balances[payerId] !== undefined) {
-                    balances[payerId] += Math.round(convertAmount(exp.amount, sourceCurr, 'USD') * 100) / 100;
+                    balances[payerId] += Math.round(convertAmount(exp.amount, sourceCurr, groupNativeCurrency) * 100) / 100;
                 }
                 exp.splits.forEach(split => {
                     const userId = split.user.toString();
                     if (balances[userId] !== undefined) {
-                        balances[userId] -= Math.round(convertAmount(split.amount, sourceCurr, 'USD') * 100) / 100;
+                        balances[userId] -= Math.round(convertAmount(split.amount, sourceCurr, groupNativeCurrency) * 100) / 100;
                     }
                 });
             });
-            // Round accumulated balances to 2dp to remove floating-point dust
+            // Round and apply phantom balance guard
             Object.keys(balances).forEach(uid => {
                 balances[uid] = Math.round(balances[uid] * 100) / 100;
-                // Phantom balance guard: snap tiny residuals to zero
                 if (Math.abs(balances[uid]) < 0.02) balances[uid] = 0;
             });
 
             // Convert to a plain object and add balances
             const groupObj = group.toObject();
             groupObj.balances = balances;
+            groupObj.balanceCurrency = groupNativeCurrency;
             return groupObj;
         }));
 
@@ -132,28 +144,38 @@ router.get('/:id', auth, async (req, res) => {
         allAssociatedMembers.forEach(m => { balances[m._id.toString()] = 0; });
 
         const { convertAmount } = require('../utils/currency');
+
+        // Detect dominant currency from expenses
+        const expCurrencyTotals = {};
+        expenses.forEach(exp => {
+            if (!exp.currency) return;
+            const c = exp.currency.toUpperCase();
+            expCurrencyTotals[c] = (expCurrencyTotals[c] || 0) + (exp.amount || 0);
+        });
+        const uniqueExpCurrencies = Object.keys(expCurrencyTotals);
+        const groupNativeCurrency = uniqueExpCurrencies.length === 1 ? uniqueExpCurrencies[0] : 'USD';
+
         expenses.forEach(exp => {
             const payerId = exp.paidBy._id.toString();
-            const sourceCurr = exp.currency || 'USD';
+            const sourceCurr = (exp.currency || groupNativeCurrency).toUpperCase();
             if (balances[payerId] !== undefined) {
-                balances[payerId] += Math.round(convertAmount(exp.amount, sourceCurr, 'USD') * 100) / 100;
+                balances[payerId] += Math.round(convertAmount(exp.amount, sourceCurr, groupNativeCurrency) * 100) / 100;
             }
 
             exp.splits.forEach(split => {
                 const debtorId = split.user._id ? split.user._id.toString() : split.user.toString();
                 if (balances[debtorId] !== undefined) {
-                    balances[debtorId] -= Math.round(convertAmount(split.amount, sourceCurr, 'USD') * 100) / 100;
+                    balances[debtorId] -= Math.round(convertAmount(split.amount, sourceCurr, groupNativeCurrency) * 100) / 100;
                 }
             });
         });
-        // Round accumulated balances to 2dp to remove floating-point dust
+        // Round and apply phantom balance guard
         Object.keys(balances).forEach(uid => {
             balances[uid] = Math.round(balances[uid] * 100) / 100;
-            // Phantom balance guard: snap tiny residuals to zero
             if (Math.abs(balances[uid]) < 0.02) balances[uid] = 0;
         });
 
-        res.json({ group, expenses, balances });
+        res.json({ group, expenses, balances, balanceCurrency: groupNativeCurrency });
     } catch (err) {
         console.error(err.message);
         res.status(500).send('Server Error');

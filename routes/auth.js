@@ -775,10 +775,12 @@ router.get('/friends', auth, async (req, res) => {
 
             const { convertAmount } = require('../utils/currency');
 
-            // --- Detect dominant currency (mirrors /expenses/friends/:friendId logic) ---
+            // Determine dominant currency from actual split amounts.
+            // Single-currency pair: balances stay in that currency, no conversion.
+            // Mixed pair: normalise through USD as a common base.
+            // Null-currency expenses (legacy data) are excluded from detection.
             const currencyTotals = {};
             expenses.forEach(exp => {
-                // Skip null-currency expenses from detection—same fix as /expenses/friends/:friendId
                 if (!exp.currency) return;
                 const c = exp.currency.toUpperCase();
                 const isPaidByMe = exp.paidBy.toString() === user._id.toString();
@@ -794,31 +796,25 @@ router.get('/friends', auth, async (req, res) => {
             });
 
             const currencies = Object.keys(currencyTotals);
-            // Single-currency pair (e.g. both INR): keep as-is. Mixed: normalise through USD.
             const dominantCurrency = currencies.length === 1 ? currencies[0] : 'USD';
 
             let balance = 0;
             expenses.forEach(exp => {
                 const isPaidByMe = exp.paidBy.toString() === user._id.toString();
-                // Null-currency expenses treated as dominantCurrency — no conversion
                 const sourceCurr = (exp.currency || dominantCurrency).toUpperCase();
                 if (isPaidByMe) {
                     const friendSplit = exp.splits.find(s => s.user.toString() === friend._id.toString());
-                    if (friendSplit)
-                        balance += Math.round(convertAmount(friendSplit.amount, sourceCurr, dominantCurrency) * 100) / 100;
+                    if (friendSplit) balance += Math.round(convertAmount(friendSplit.amount, sourceCurr, dominantCurrency) * 100) / 100;
                 } else {
                     const mySplit = exp.splits.find(s => s.user.toString() === user._id.toString());
-                    if (mySplit)
-                        balance -= Math.round(convertAmount(mySplit.amount, sourceCurr, dominantCurrency) * 100) / 100;
+                    if (mySplit) balance -= Math.round(convertAmount(mySplit.amount, sourceCurr, dominantCurrency) * 100) / 100;
                 }
             });
 
             balance = Math.round(balance * 100) / 100;
 
-            // Phantom balance guard: tiny residuals from cross-currency rounding → snap to 0
-            if (currencies.length > 1 && Math.abs(balance) < 0.50) {
-                balance = 0;
-            }
+            // Snap sub-50¢ residuals to zero for mixed-currency pairs (cross-rate rounding drift).
+            if (currencies.length > 1 && Math.abs(balance) < 0.50) balance = 0;
 
             return {
                 _id: friend._id,
