@@ -425,12 +425,18 @@ router.get('/friends/:friendId', auth, async (req, res) => {
 
         const { convertAmount } = require('../utils/currency');
 
-        // Determine dominant currency from actual split amounts.
+        // ── Separate direct vs group expenses for balance calculation ────────
+        // Group expenses are shown in the list for context, but the friend-level
+        // "Settle Up" should ONLY cover direct (non-group) expenses. Each group
+        // has its own settle-up flow inside GroupDetails.
+        const directExpenses = expenses.filter(exp => !exp.group);
+
+        // Determine dominant currency from DIRECT split amounts only.
         // Single-currency pair (e.g. both INR): balances stay in that currency.
         // Mixed pair (INR + USD): normalise through USD as a common base.
         // Expenses with no currency field are excluded from detection (legacy data).
         const currencyTotals = {};
-        expenses.forEach(exp => {
+        directExpenses.forEach(exp => {
             if (!exp.currency) return;
             const c = exp.currency.toUpperCase();
             const isPaidByMe = exp.paidBy._id.toString() === req.user.id;
@@ -448,10 +454,10 @@ router.get('/friends/:friendId', auth, async (req, res) => {
         const currencies = Object.keys(currencyTotals);
         const dominantCurrency = currencies.length === 1 ? currencies[0] : 'USD';
 
-        // Accumulate balance in dominantCurrency.
-        // Null-currency expenses (legacy) are treated as dominantCurrency — no conversion applied.
+        // Accumulate balance using DIRECT expenses only.
+        // Group expenses are deliberately excluded — they belong to the group settle-up.
         let balance = 0;
-        expenses.forEach(exp => {
+        directExpenses.forEach(exp => {
             const isPaidByMe = exp.paidBy._id.toString() === req.user.id;
             const sourceCurr = (exp.currency || dominantCurrency).toUpperCase();
             if (isPaidByMe) {
@@ -468,7 +474,8 @@ router.get('/friends/:friendId', auth, async (req, res) => {
         // Snap sub-50¢ residuals to zero for mixed-currency pairs (cross-rate rounding drift).
         if (currencies.length > 1 && Math.abs(balance) < 0.50) balance = 0;
 
-        res.json({ friend, expenses, balance, balanceCurrency: dominantCurrency });
+        // Return all expenses (including group ones for display) but balance covers direct only.
+        res.json({ friend, expenses, balance, balanceCurrency: dominantCurrency, directBalance: balance });
     } catch (err) {
         console.error(err.message);
         if (err.kind === 'ObjectId') {
