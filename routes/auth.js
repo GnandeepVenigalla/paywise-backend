@@ -772,32 +772,60 @@ router.get('/friends', auth, async (req, res) => {
 
             expenses = expenses.filter(exp => !(exp.group && exp.group.groupType === 'community'));
 
-            let balance = 0; // Negative means user owes friend, Positive means friend owes user
 
             const { convertAmount } = require('../utils/currency');
+
+            // --- Detect dominant currency (mirrors /expenses/friends/:friendId logic) ---
+            const currencyTotals = {};
             expenses.forEach(exp => {
+                const c = (exp.currency || 'USD').toUpperCase();
                 const isPaidByMe = exp.paidBy.toString() === user._id.toString();
-                const sourceCurr = exp.currency || 'USD';
+                let splitAmt = 0;
                 if (isPaidByMe) {
-                    const friendSplit = exp.splits.find(s => s.user.toString() === friend._id.toString());
-                    if (friendSplit) {
-                        balance += convertAmount(friendSplit.amount, sourceCurr, 'USD'); // Friend owes me
-                    }
+                    const fSplit = exp.splits.find(s => s.user.toString() === friend._id.toString());
+                    if (fSplit) splitAmt = fSplit.amount;
                 } else {
                     const mySplit = exp.splits.find(s => s.user.toString() === user._id.toString());
-                    if (mySplit) {
-                        balance -= convertAmount(mySplit.amount, sourceCurr, 'USD'); // I owe friend
-                    }
+                    if (mySplit) splitAmt = mySplit.amount;
+                }
+                if (splitAmt > 0) currencyTotals[c] = (currencyTotals[c] || 0) + splitAmt;
+            });
+
+            const currencies = Object.keys(currencyTotals);
+            // Single-currency pair (e.g. both INR): keep as-is. Mixed: normalise through USD.
+            const dominantCurrency = currencies.length === 1 ? currencies[0] : 'USD';
+
+            let balance = 0;
+            expenses.forEach(exp => {
+                const isPaidByMe = exp.paidBy.toString() === user._id.toString();
+                const sourceCurr = (exp.currency || 'USD').toUpperCase();
+                if (isPaidByMe) {
+                    const friendSplit = exp.splits.find(s => s.user.toString() === friend._id.toString());
+                    if (friendSplit)
+                        balance += Math.round(convertAmount(friendSplit.amount, sourceCurr, dominantCurrency) * 100) / 100;
+                } else {
+                    const mySplit = exp.splits.find(s => s.user.toString() === user._id.toString());
+                    if (mySplit)
+                        balance -= Math.round(convertAmount(mySplit.amount, sourceCurr, dominantCurrency) * 100) / 100;
                 }
             });
 
+            balance = Math.round(balance * 100) / 100;
+
+            // Phantom balance guard: tiny residuals from cross-currency rounding → snap to 0
+            if (currencies.length > 1 && Math.abs(balance) < 0.50) {
+                balance = 0;
+            }
+
             return {
                 _id: friend._id,
-                id: friend._id, // map for frontend
+                id: friend._id,
                 username: friend.username,
                 email: friend.email,
-                balance
+                balance,
+                balanceCurrency: dominantCurrency,
             };
+
         }));
 
         res.json(friendsWithBalances);
