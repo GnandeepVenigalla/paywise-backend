@@ -12,7 +12,8 @@ const { notifyExpenseAction, notifyCommunityUpdate } = require('../utils/expense
 // @desc    Add an expense
 router.post('/', auth, async (req, res) => {
     try {
-        const { description, amount, currency, group, paidBy, splits, items, isLoan, loanInterestRate } = req.body;
+        const { description, amount, currency, group, paidBy, splits, items, isLoan, loanInterestRate,
+            isRecurring, recurrenceFrequency, recurrenceEndDate } = req.body;
         const User = require('../models/User');
         const { getCurrencySymbol } = require('../utils/currency');
 
@@ -38,7 +39,16 @@ router.post('/', auth, async (req, res) => {
             splits,
             items: items || [],
             isLoan: isLoan || false,
-            loanInterestRate: loanInterestRate || 0
+            loanInterestRate: loanInterestRate || 0,
+            isRecurring: !!isRecurring,
+            recurrenceFrequency: isRecurring ? (recurrenceFrequency || 'monthly') : null,
+            recurrenceEndDate: isRecurring && recurrenceEndDate ? new Date(recurrenceEndDate) : null,
+            nextRecurrenceDate: (() => {
+                if (!isRecurring) return null;
+                const { nextDate } = require('../utils/recurringScheduler');
+                return nextDate(new Date(), recurrenceFrequency || 'monthly');
+            })(),
+            recurrenceId: isRecurring ? require('crypto').randomUUID() : null
         });
 
         let expense = await newExpense.save();
@@ -409,17 +419,32 @@ router.get('/friends/:friendId', auth, async (req, res) => {
             return res.status(404).json({ msg: 'Friend not found' });
         }
 
-        let expenses = await Expense.find({
-            $or: [
-                { paidBy: req.user.id, 'splits.user': friend._id },
-                { paidBy: friend._id, 'splits.user': req.user.id }
-            ]
-        })
-            .sort({ date: -1 })
-            .populate('group', 'name groupType')
-            .populate('paidBy', 'username email')
-            .populate('addedBy', 'username email')
-            .populate('splits.user', 'username email');
+        let expenses;
+        if (req.params.friendId === req.user.id) {
+            expenses = await Expense.find({
+                group: null,
+                paidBy: req.user.id,
+                splits: { $size: 1 },
+                'splits.user': req.user.id
+            })
+                .sort({ date: -1 })
+                .populate('group', 'name groupType')
+                .populate('paidBy', 'username email')
+                .populate('addedBy', 'username email')
+                .populate('splits.user', 'username email');
+        } else {
+            expenses = await Expense.find({
+                $or: [
+                    { paidBy: req.user.id, 'splits.user': friend._id },
+                    { paidBy: friend._id, 'splits.user': req.user.id }
+                ]
+            })
+                .sort({ date: -1 })
+                .populate('group', 'name groupType')
+                .populate('paidBy', 'username email')
+                .populate('addedBy', 'username email')
+                .populate('splits.user', 'username email');
+        }
 
         expenses = expenses.filter(exp => !(exp.group && typeof exp.group === 'object' && exp.group.groupType === 'community'));
 
@@ -658,6 +683,29 @@ router.post('/:id/settle-my-share', auth, async (req, res) => {
     } catch (err) {
         console.error('[SettleMyShare] Error:', err.message);
         if (err.kind === 'ObjectId') return res.status(404).json({ msg: 'Expense not found' });
+        res.status(500).send('Server Error');
+    }
+});
+
+// @route   PATCH api/expenses/:id/cancel-recurring
+// @desc    Cancel a recurring expense series (stops future auto-posting)
+router.patch('/:id/cancel-recurring', auth, async (req, res) => {
+    try {
+        const expense = await Expense.findById(req.params.id);
+        if (!expense) return res.status(404).json({ msg: 'Expense not found' });
+
+        const isCreator = (expense.addedBy?.toString() || expense.paidBy?.toString()) === req.user.id;
+        if (!isCreator) return res.status(403).json({ msg: 'Only the creator can cancel this recurring bill.' });
+
+        if (!expense.isRecurring) return res.status(400).json({ msg: 'This expense is not a recurring template.' });
+
+        expense.isRecurring = false;
+        expense.nextRecurrenceDate = null;
+        await expense.save();
+
+        res.json({ msg: 'Recurring bill cancelled. No more auto-posts will occur.' });
+    } catch (err) {
+        console.error('[Cancel-Recurring] Error:', err.message);
         res.status(500).send('Server Error');
     }
 });

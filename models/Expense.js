@@ -21,7 +21,13 @@ const ExpenseSchema = new mongoose.Schema({
     loanInterestRate: { type: Number, default: 0 },
     lastInterestApplied: { type: Date },
     parentLoan: { type: mongoose.Schema.Types.ObjectId, ref: 'Expense' },
-    billImage: { type: String, default: null }
+    billImage: { type: String, default: null },
+    // ── Recurring bill fields ──────────────────────────────
+    isRecurring: { type: Boolean, default: false },
+    recurrenceId: { type: String, default: null },          // shared UUID linking all instances
+    recurrenceFrequency: { type: String, enum: ['weekly', 'biweekly', 'monthly', 'yearly', null], default: null },
+    recurrenceEndDate: { type: Date, default: null },       // null = until cancelled
+    nextRecurrenceDate: { type: Date, default: null },      // null on non-template instances
 }, { timestamps: true });
 
 module.exports = mongoose.model('Expense', ExpenseSchema);

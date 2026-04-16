@@ -60,6 +60,9 @@ mongoose.connect(MONGO_URI).then(() => {
         // Start the support ticket 7-day cleanup protocol
         const startSupportCleanup = require('./utils/supportCleanup');
         startSupportCleanup();
+        // Start the recurring expense auto-post scheduler (runs daily at 00:01 AM)
+        const { startRecurringScheduler } = require('./utils/recurringScheduler');
+        startRecurringScheduler();
         // Fetch live exchange rates and schedule 12-hour refresh cycle
         updateRates();
         setInterval(updateRates, 1000 * 60 * 60 * 12);
