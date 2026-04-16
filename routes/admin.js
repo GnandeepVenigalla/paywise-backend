@@ -343,6 +343,27 @@ router.delete('/users/:id', auth, isAdmin, checkPerms(['root', 'super_admin']), 
     }
 });
 
+// @route   GET api/admin/users/:id/profile
+// @desc    Get enriched user profile (expense count, groups, loans) for admin detail panel
+router.get('/users/:id/profile', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin', 'moderator', 'read_only']), async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id).select('-password');
+        if (!user) return res.status(404).json({ msg: 'User not found' });
+
+        const [expenseCount, groupCount, loanCount, recurringCount] = await Promise.all([
+            Expense.countDocuments({ $or: [{ paidBy: user._id }, { 'splits.user': user._id }], isRecurring: { $ne: true } }),
+            Group.countDocuments({ members: user._id }),
+            Expense.countDocuments({ isLoan: true, $or: [{ paidBy: user._id }, { 'splits.user': user._id }] }),
+            Expense.countDocuments({ isRecurring: true, paidBy: user._id })
+        ]);
+
+        res.json({ user, stats: { expenseCount, groupCount, loanCount, recurringCount } });
+    } catch (err) {
+        console.error('[Admin Profile]', err.message);
+        res.status(500).send('Server Error');
+    }
+});
+
 // @route   POST api/admin/release/beta-link
 // @desc    Generate a secure beta link (Root/Super Admin/Admin)
 router.post('/release/beta-link', auth, isAdmin, checkPerms(['root', 'super_admin', 'admin']), async (req, res) => {
