@@ -770,7 +770,11 @@ router.get('/friends', auth, async (req, res) => {
                 ]
             }).populate('group', 'name groupType');
 
-            expenses = expenses.filter(exp => !(exp.group && exp.group.groupType === 'community'));
+            // Exclude ALL group expenses — they are already counted in the group balance.
+            // Including them here causes double-counting on the Dashboard "Overall" total.
+            // Only direct (non-group) expenses should contribute to the friend-to-friend balance.
+            expenses = expenses.filter(exp => !exp.group);
+
 
 
             const { convertAmount } = require('../utils/currency');
